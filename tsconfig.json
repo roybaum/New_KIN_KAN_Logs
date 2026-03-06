@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "lib": ["esnext"],
+    "experimentalDecorators": true,
+    "noImplicitAny": false,
+    "moduleResolution": "node",
+    "target": "esnext",
+    "types": ["google-apps-script"]
+  },
+  "exclude": [
+    "node_modules"
+  ]
+}
