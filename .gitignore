@@ -1,0 +1,13 @@
+# Credentials and Local Settings
+.clasp.json
+credentials.json
+clasp-auth.json
+scripts.html
+
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# OS specific files
+.DS_Store
+Thumbs.db

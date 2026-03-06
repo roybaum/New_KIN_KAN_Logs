@@ -1,0 +1,17 @@
+# Ignore all files by default
+**/**
+
+# Exceptions: Only allow these to be pushed to Google
+!appsscript.json
+!**/*.js
+!**/*.gs
+!**/*.html
+
+# Ignore specific development/git folders
+.git/
+node_modules/
+.clasp.json
+.gitignore
+README.md
+package.json
+package-lock.json
