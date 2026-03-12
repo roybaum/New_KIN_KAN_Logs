@@ -1,5 +1,12 @@
 {
   "devDependencies": {
-    "@types/google-apps-script": "^2.0.8"
+    "@types/google-apps-script": "^2.0.8",
+    "typescript": "^5.9.3",
+    "@google/clasp": "^2.4.2"
+  },
+  "scripts": {
+    "build": "tsc && copy appsscript.json dist\\",
+    "push": "npm run build && clasp push",
+    "pull": "clasp pull"
   }
 }

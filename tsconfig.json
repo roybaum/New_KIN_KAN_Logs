@@ -1,13 +1,11 @@
 {
   "compilerOptions": {
-    "lib": ["esnext"],
-    "experimentalDecorators": true,
-    "noImplicitAny": false,
-    "moduleResolution": "node",
-    "target": "esnext",
-    "types": ["google-apps-script"]
+    "target": "ES2019",
+    "module": "none",
+    "types": ["google-apps-script"],
+    "lib": ["ES2019"],
+    "rootDir": "src",
+    "outDir": "dist"
   },
-  "exclude": [
-    "node_modules"
-  ]
+  "include": ["src/**/*.ts"]
 }
