@@ -13,16 +13,21 @@ function onEdit(e) {
     const col = e.range.getColumn();
     if (row < 2)
         return;
-    if (col === CART_ID_COLUMN && isCellCleared_(e.value)) {
-        clearEntryRow_(sheet, row);
-        return;
+    const singleCellEdit = isSingleCellEdit_(e.range);
+    const cartIdRangeEdited = rangeIncludesColumn_(e.range, CART_ID_COLUMN);
+    if (cartIdRangeEdited) {
+        processCartIdRangeEdit_(sheet, e.range);
+        if (!singleCellEdit || col === CART_ID_COLUMN)
+            return;
     }
+    if (!singleCellEdit)
+        return;
     if (col === PICKER_COLUMN) {
         applyPickerSelection_(sheet, row, String(e.value || ""));
         return;
     }
-    // Only respond to Title (D) or Cart ID (G)
-    if (col !== TITLE_COLUMN && col !== CART_ID_COLUMN)
+    // Only respond to Title (D) here. Cart ID (G) is handled above.
+    if (col !== TITLE_COLUMN)
         return;
     clearPicker_(sheet, row);
     const searchValue = String(e.value || "").trim().toLowerCase();
@@ -31,7 +36,8 @@ function onEdit(e) {
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
     if (!inventorySheet)
         return;
-    const matches = findInventoryMatches_(inventorySheet, searchValue);
+    const activeInventory = getActiveInventoryMatches_(inventorySheet);
+    const matches = findMatchesInInventory_(activeInventory, searchValue);
     if (matches.length === 0)
         return;
     if (matches.length === 1) {
@@ -41,13 +47,17 @@ function onEdit(e) {
     setPickerForMatches_(sheet, row, searchValue, matches);
 }
 function findInventoryMatches_(inventorySheet, searchValue) {
+    const activeInventory = getActiveInventoryMatches_(inventorySheet);
+    return findMatchesInInventory_(activeInventory, searchValue);
+}
+function getActiveInventoryMatches_(inventorySheet) {
     const lastRow = inventorySheet.getLastRow();
     if (lastRow < 2)
         return [];
     const data = inventorySheet.getRange(2, 1, lastRow - 1, 7).getValues();
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const matches = [];
+    const activeInventory = [];
     for (const item of data) {
         const match = {
             title: String(item[0]),
@@ -58,13 +68,23 @@ function findInventoryMatches_(inventorySheet, searchValue) {
             startDate: item[5],
             endDate: item[6]
         };
-        const titleMatch = match.title.toLowerCase().includes(searchValue);
-        const cartMatch = match.cartId.toLowerCase().includes(searchValue);
-        if (!titleMatch && !cartMatch)
-            continue;
         if (!isActiveToday_(today, match.startDate, match.endDate))
             continue;
-        matches.push(match);
+        activeInventory.push(match);
+    }
+    return activeInventory;
+}
+function findMatchesInInventory_(inventory, searchValue) {
+    const normalizedSearch = searchValue.trim().toLowerCase();
+    if (!normalizedSearch)
+        return [];
+    const matches = [];
+    for (const item of inventory) {
+        const titleMatch = item.title.toLowerCase().includes(normalizedSearch);
+        const cartMatch = item.cartId.toLowerCase().includes(normalizedSearch);
+        if (!titleMatch && !cartMatch)
+            continue;
+        matches.push(item);
     }
     return matches;
 }
@@ -167,6 +187,49 @@ function clearEntryRow_(entrySheet, row) {
     rowRange.clearContent();
     rowRange.clearDataValidations();
     rowRange.clearNote();
+}
+function processCartIdRangeEdit_(entrySheet, editedRange) {
+    if (!rangeIncludesColumn_(editedRange, CART_ID_COLUMN))
+        return;
+    const cartIdOffset = CART_ID_COLUMN - editedRange.getColumn();
+    const values = editedRange.getValues();
+    const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
+    const activeInventory = inventorySheet ? getActiveInventoryMatches_(inventorySheet) : [];
+    for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {
+        const targetRow = editedRange.getRow() + rowOffset;
+        if (targetRow < 2)
+            continue;
+        const cartIdValue = values[rowOffset][cartIdOffset];
+        clearPicker_(entrySheet, targetRow);
+        if (isCellCleared_(cartIdValue)) {
+            clearEntryRow_(entrySheet, targetRow);
+            continue;
+        }
+        if (!inventorySheet)
+            continue;
+        const searchValue = String(cartIdValue).trim().toLowerCase();
+        const matches = findMatchesInInventory_(activeInventory, searchValue);
+        if (matches.length === 0)
+            continue;
+        const exactMatch = matches.find((match) => match.cartId.toLowerCase() === searchValue);
+        if (exactMatch) {
+            applyMatchToEntryRow_(entrySheet, targetRow, exactMatch);
+            continue;
+        }
+        if (matches.length === 1) {
+            applyMatchToEntryRow_(entrySheet, targetRow, matches[0]);
+            continue;
+        }
+        setPickerForMatches_(entrySheet, targetRow, searchValue, matches);
+    }
+}
+function rangeIncludesColumn_(range, column) {
+    const startColumn = range.getColumn();
+    const endColumn = startColumn + range.getNumColumns() - 1;
+    return column >= startColumn && column <= endColumn;
+}
+function isSingleCellEdit_(range) {
+    return range.getNumRows() === 1 && range.getNumColumns() === 1;
 }
 function isCellCleared_(value) {
     if (value === undefined || value === null)
