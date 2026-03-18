@@ -1,5 +1,18 @@
 const ENTRY_SHEET_NAME = "Entry";
 const INVENTORY_SHEET_NAME = "Inventory";
+const INVENTORY_IMPORT_SOURCE_SPREADSHEET_ID = "1QYBk6N_RZygLDPWV8BjVpF2azXBCyvGNRuz9XvpakPE";
+const INVENTORY_IMPORT_SOURCE_SHEET_NAME = "Inventory";
+const INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT = 7;
+
+const INVENTORY_IMPORT_COLUMN_MAPPING: Array<{ sourceHeader: string; destinationIndex: number }> = [
+  { sourceHeader: "Title", destinationIndex: 0 },
+  { sourceHeader: "Artist", destinationIndex: 1 },
+  { sourceHeader: "Category", destinationIndex: 2 },
+  { sourceHeader: "Number", destinationIndex: 3 },
+  { sourceHeader: "LengthSeconds", destinationIndex: 4 },
+  { sourceHeader: "StartDate", destinationIndex: 5 },
+  { sourceHeader: "EndDate", destinationIndex: 6 }
+];
 
 const TITLE_COLUMN = 4; // D
 const CART_ID_COLUMN = 7; // G
@@ -15,6 +28,54 @@ interface InventoryMatch {
   length: CellValue;
   startDate: CellValue;
   endDate: CellValue;
+}
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu("KIN KAN Tools")
+    .addItem("Sync Inventory", "syncInventoryFromExternalWorkbook")
+    .addToUi();
+}
+
+function syncInventoryFromExternalWorkbook() {
+  const destinationSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const destinationSheet = destinationSpreadsheet.getSheetByName(INVENTORY_SHEET_NAME);
+  if (!destinationSheet) {
+    throw new Error(
+      `Destination sheet "${INVENTORY_SHEET_NAME}" was not found in the active spreadsheet.`
+    );
+  }
+
+  const sourceSpreadsheet = SpreadsheetApp.openById(INVENTORY_IMPORT_SOURCE_SPREADSHEET_ID);
+  const sourceSheet = sourceSpreadsheet.getSheetByName(INVENTORY_IMPORT_SOURCE_SHEET_NAME);
+  if (!sourceSheet) {
+    throw new Error(
+      `Source sheet "${INVENTORY_IMPORT_SOURCE_SHEET_NAME}" was not found in the source spreadsheet.`
+    );
+  }
+
+  const sourceLastColumn = sourceSheet.getLastColumn();
+  if (sourceLastColumn < 1) {
+    writeInventoryRows_(destinationSheet, []);
+    return;
+  }
+
+  const sourceHeaders = sourceSheet.getRange(1, 1, 1, sourceLastColumn).getValues()[0];
+  const sourceHeaderIndexByKey = buildHeaderIndexByKey_(sourceHeaders);
+  validateInventoryImportHeaders_(sourceHeaderIndexByKey);
+
+  const sourceLastRow = sourceSheet.getLastRow();
+  const sourceRows =
+    sourceLastRow > 1
+      ? sourceSheet.getRange(2, 1, sourceLastRow - 1, sourceLastColumn).getValues()
+      : [];
+
+  const mappedRows = sourceRows
+    .map((sourceRow) => mapSourceInventoryRow_(sourceRow, sourceHeaderIndexByKey))
+    .filter((row) => !isInventoryRowBlank_(row));
+
+  writeInventoryRows_(destinationSheet, mappedRows);
+  Logger.log(`Inventory sync complete. Imported ${mappedRows.length} row(s).`);
 }
 
 function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
@@ -307,4 +368,87 @@ function isCellCleared_(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   if (typeof value !== "string") return false;
   return value.trim() === "";
+}
+
+function buildHeaderIndexByKey_(headers: unknown[]): Record<string, number> {
+  const indexByHeader: Record<string, number> = {};
+
+  for (let index = 0; index < headers.length; index++) {
+    const headerKey = normalizeHeaderKey_(headers[index]);
+    if (!headerKey) continue;
+    indexByHeader[headerKey] = index;
+  }
+
+  return indexByHeader;
+}
+
+function validateInventoryImportHeaders_(sourceHeaderIndexByKey: Record<string, number>): void {
+  const missingHeaders: string[] = [];
+
+  for (const mapping of INVENTORY_IMPORT_COLUMN_MAPPING) {
+    const normalizedHeader = normalizeHeaderKey_(mapping.sourceHeader);
+    if (sourceHeaderIndexByKey[normalizedHeader] !== undefined) continue;
+    missingHeaders.push(mapping.sourceHeader);
+  }
+
+  if (missingHeaders.length === 0) return;
+
+  throw new Error(
+    `Source Inventory sheet is missing required column(s): ${missingHeaders.join(", ")}.`
+  );
+}
+
+function mapSourceInventoryRow_(
+  sourceRow: unknown[],
+  sourceHeaderIndexByKey: Record<string, number>
+): CellValue[] {
+  const mappedRow: CellValue[] = new Array(INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT).fill("");
+
+  for (const mapping of INVENTORY_IMPORT_COLUMN_MAPPING) {
+    const sourceIndex = sourceHeaderIndexByKey[normalizeHeaderKey_(mapping.sourceHeader)];
+    if (sourceIndex === undefined) continue;
+    const sourceValue = sourceRow[sourceIndex] as CellValue;
+    mappedRow[mapping.destinationIndex] = sourceValue ?? "";
+  }
+
+  return mappedRow;
+}
+
+function writeInventoryRows_(
+  destinationSheet: GoogleAppsScript.Spreadsheet.Sheet,
+  rows: CellValue[][]
+): void {
+  const existingRowCount = Math.max(destinationSheet.getLastRow() - 1, 0);
+  if (existingRowCount > 0) {
+    destinationSheet
+      .getRange(2, 1, existingRowCount, INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT)
+      .clearContent();
+  }
+
+  if (rows.length === 0) return;
+
+  destinationSheet
+    .getRange(2, 1, rows.length, INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT)
+    .setValues(rows);
+}
+
+function isInventoryRowBlank_(row: CellValue[]): boolean {
+  for (const value of row) {
+    if (!isCellValueBlank_(value)) return false;
+  }
+
+  return true;
+}
+
+function isCellValueBlank_(value: CellValue): boolean {
+  if (value === null || value === "") return true;
+  if (typeof value !== "string") return false;
+  return value.trim() === "";
+}
+
+function normalizeHeaderKey_(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "");
 }
