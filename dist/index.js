@@ -15,6 +15,8 @@ const INVENTORY_IMPORT_COLUMN_MAPPING = [
 const TITLE_COLUMN = 4; // D
 const CART_ID_COLUMN = 7; // G
 const PICKER_COLUMN = 9; // I
+const VALID_CART_ID_FONT_COLOR = "#000000";
+const INVALID_CART_ID_FONT_COLOR = "#d93025";
 function onOpen() {
     SpreadsheetApp.getUi()
         .createMenu("KIN KAN Tools")
@@ -166,6 +168,7 @@ function applyMatchToEntryRow_(entrySheet, row, match) {
             match.cartId,
             match.length
         ]]);
+    markCartIdAsValid_(entrySheet, row);
 }
 function setPickerForMatches_(entrySheet, row, matches) {
     const options = matches.map((match) => formatPickerOption_(match));
@@ -220,6 +223,7 @@ function clearEntryRow_(entrySheet, row) {
     rowRange.clearContent();
     rowRange.clearDataValidations();
     rowRange.clearNote();
+    markCartIdAsValid_(entrySheet, row);
 }
 function processCartIdRangeEdit_(entrySheet, editedRange) {
     if (!rangeIncludesColumn_(editedRange, CART_ID_COLUMN))
@@ -239,14 +243,18 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
             clearEntryRow_(entrySheet, targetRow);
             continue;
         }
-        if (!inventorySheet)
+        if (!inventorySheet) {
+            markCartIdAsValid_(entrySheet, targetRow);
             continue;
+        }
         const searchValue = String(cartIdValue).trim().toLowerCase();
         const matches = findMatchesInInventory_(activeInventory, searchValue);
         if (matches.length === 0) {
             invalidCarts.push({ row: targetRow, cartId: String(cartIdValue).trim() });
+            markCartIdAsInvalid_(entrySheet, targetRow);
             continue;
         }
+        markCartIdAsValid_(entrySheet, targetRow);
         const exactMatch = matches.find((match) => match.cartId.toLowerCase() === searchValue);
         if (exactMatch) {
             applyMatchToEntryRow_(entrySheet, targetRow, exactMatch);
@@ -279,6 +287,12 @@ function showInvalidCartToast_(entrySheet, invalidCarts) {
     const suffix = remainingCount > 0 ? `, +${remainingCount} more` : "";
     const message = `${invalidCarts.length} invalid Cart IDs: ${preview}${suffix}.`;
     spreadsheet.toast(message, "Invalid Cart IDs", 8);
+}
+function markCartIdAsValid_(entrySheet, row) {
+    entrySheet.getRange(row, CART_ID_COLUMN).setFontColor(VALID_CART_ID_FONT_COLOR);
+}
+function markCartIdAsInvalid_(entrySheet, row) {
+    entrySheet.getRange(row, CART_ID_COLUMN).setFontColor(INVALID_CART_ID_FONT_COLOR);
 }
 function rangeIncludesColumn_(range, column) {
     const startColumn = range.getColumn();

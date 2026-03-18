@@ -17,6 +17,8 @@ const INVENTORY_IMPORT_COLUMN_MAPPING: Array<{ sourceHeader: string; destination
 const TITLE_COLUMN = 4; // D
 const CART_ID_COLUMN = 7; // G
 const PICKER_COLUMN = 9; // I
+const VALID_CART_ID_FONT_COLOR = "#000000";
+const INVALID_CART_ID_FONT_COLOR = "#d93025";
 
 type CellValue = string | number | boolean | Date | null;
 
@@ -219,6 +221,8 @@ function applyMatchToEntryRow_(
     match.cartId,
     match.length
   ]]);
+
+  markCartIdAsValid_(entrySheet, row);
 }
 
 function setPickerForMatches_(
@@ -292,6 +296,7 @@ function clearEntryRow_(entrySheet: GoogleAppsScript.Spreadsheet.Sheet, row: num
   rowRange.clearContent();
   rowRange.clearDataValidations();
   rowRange.clearNote();
+  markCartIdAsValid_(entrySheet, row);
 }
 
 function processCartIdRangeEdit_(
@@ -318,14 +323,20 @@ function processCartIdRangeEdit_(
       continue;
     }
 
-    if (!inventorySheet) continue;
+    if (!inventorySheet) {
+      markCartIdAsValid_(entrySheet, targetRow);
+      continue;
+    }
 
     const searchValue = String(cartIdValue).trim().toLowerCase();
     const matches = findMatchesInInventory_(activeInventory, searchValue);
     if (matches.length === 0) {
       invalidCarts.push({ row: targetRow, cartId: String(cartIdValue).trim() });
+      markCartIdAsInvalid_(entrySheet, targetRow);
       continue;
     }
+
+    markCartIdAsValid_(entrySheet, targetRow);
 
     const exactMatch = matches.find((match) => match.cartId.toLowerCase() === searchValue);
     if (exactMatch) {
@@ -370,6 +381,14 @@ function showInvalidCartToast_(
   const message = `${invalidCarts.length} invalid Cart IDs: ${preview}${suffix}.`;
 
   spreadsheet.toast(message, "Invalid Cart IDs", 8);
+}
+
+function markCartIdAsValid_(entrySheet: GoogleAppsScript.Spreadsheet.Sheet, row: number): void {
+  entrySheet.getRange(row, CART_ID_COLUMN).setFontColor(VALID_CART_ID_FONT_COLOR);
+}
+
+function markCartIdAsInvalid_(entrySheet: GoogleAppsScript.Spreadsheet.Sheet, row: number): void {
+  entrySheet.getRange(row, CART_ID_COLUMN).setFontColor(INVALID_CART_ID_FONT_COLOR);
 }
 
 function rangeIncludesColumn_(
