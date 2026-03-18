@@ -1,4 +1,4 @@
-const ENTRY_SHEET_NAME = "Entry";
+const LOG_SHEET_NAMES = ["KIN_MON", "KIN_TUE", "KIN_WED", "KIN_THU", "KIN_FRI", "KIN_SAT"];
 const INVENTORY_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_SOURCE_SPREADSHEET_ID = "1QYBk6N_RZygLDPWV8BjVpF2azXBCyvGNRuz9XvpakPE";
 const INVENTORY_IMPORT_SOURCE_SHEET_NAME = "Inventory";
@@ -56,7 +56,7 @@ function onEdit(e) {
     if (!e)
         return;
     const sheet = e.range.getSheet();
-    if (sheet.getName() !== ENTRY_SHEET_NAME)
+    if (!isLogSheetName_(sheet.getName()))
         return;
     const row = e.range.getRow();
     const col = e.range.getColumn();
@@ -287,6 +287,9 @@ function showInvalidCartToast_(entrySheet, invalidCarts) {
     const suffix = remainingCount > 0 ? `, +${remainingCount} more` : "";
     const message = `${invalidCarts.length} invalid Cart IDs: ${preview}${suffix}.`;
     spreadsheet.toast(message, "Invalid Cart IDs", 8);
+}
+function isLogSheetName_(sheetName) {
+    return LOG_SHEET_NAMES.includes(sheetName);
 }
 function markCartIdAsValid_(entrySheet, row) {
     entrySheet.getRange(row, CART_ID_COLUMN).setFontColor(VALID_CART_ID_FONT_COLOR);
