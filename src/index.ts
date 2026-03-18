@@ -123,7 +123,7 @@ function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
     return;
   }
 
-  setPickerForMatches_(sheet, row, searchValue, matches);
+  setPickerForMatches_(sheet, row, matches);
 }
 
 function findInventoryMatches_(
@@ -224,20 +224,18 @@ function applyMatchToEntryRow_(
 function setPickerForMatches_(
   entrySheet: GoogleAppsScript.Spreadsheet.Sheet,
   row: number,
-  searchValue: string,
   matches: InventoryMatch[]
 ) {
-  const options = matches.map((match, index) => formatPickerOption_(index, match));
+  const options = matches.map((match) => formatPickerOption_(match));
   const rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(options, true)
-    .setAllowInvalid(false)
-    .setHelpText("Select the matching inventory item.")
+    .setAllowInvalid(true)
     .build();
 
   const pickerCell = entrySheet.getRange(row, PICKER_COLUMN);
   pickerCell.clearContent();
+  pickerCell.clearNote();
   pickerCell.setDataValidation(rule);
-  pickerCell.setNote(JSON.stringify({ searchValue }));
 }
 
 function applyPickerSelection_(
@@ -247,50 +245,39 @@ function applyPickerSelection_(
 ) {
   if (!pickerValue) return;
 
-  const pickerCell = entrySheet.getRange(row, PICKER_COLUMN);
-  const note = pickerCell.getNote();
-  if (!note) return;
-
-  const matchIndex = parsePickerIndex_(pickerValue);
-  if (matchIndex < 0) return;
-
-  let metadata: { searchValue: string };
-  try {
-    metadata = JSON.parse(note) as { searchValue: string };
-  } catch {
+  const cartId = parsePickerCartId_(pickerValue);
+  if (!cartId) {
+    entrySheet.getRange(row, PICKER_COLUMN).clearContent();
     return;
   }
-
-  if (!metadata.searchValue) return;
 
   const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
   if (!inventorySheet) return;
 
-  const matches = findInventoryMatches_(inventorySheet, metadata.searchValue);
-  if (matchIndex >= matches.length) return;
+  const activeInventory = getActiveInventoryMatches_(inventorySheet);
+  const selectedMatch = activeInventory.find(
+    (match) => match.cartId.trim().toLowerCase() === cartId.toLowerCase()
+  );
+  if (!selectedMatch) return;
 
-  applyMatchToEntryRow_(entrySheet, row, matches[matchIndex]);
+  applyMatchToEntryRow_(entrySheet, row, selectedMatch);
   clearPicker_(entrySheet, row);
 }
 
-function parsePickerIndex_(value: string): number {
-  const indexMatch = value.match(/^\[(\d+)\]/);
-  if (!indexMatch) return -1;
-
-  const zeroBasedIndex = Number(indexMatch[1]) - 1;
-  if (!Number.isInteger(zeroBasedIndex) || zeroBasedIndex < 0) return -1;
-
-  return zeroBasedIndex;
+function parsePickerCartId_(value: string): string {
+  const cartIdMatch = value.match(/\(([^()]*)\)\s*$/);
+  if (!cartIdMatch) return "";
+  return cartIdMatch[1].trim();
 }
 
-function formatPickerOption_(index: number, match: InventoryMatch): string {
+function formatPickerOption_(match: InventoryMatch): string {
   const maxTitleLength = 45;
   const shortTitle =
     match.title.length > maxTitleLength
       ? `${match.title.slice(0, maxTitleLength - 3)}...`
       : match.title;
 
-  return `[${index + 1}] ${shortTitle} | ${match.cartId}`;
+  return `${shortTitle} (${match.cartId})`;
 }
 
 function clearPicker_(entrySheet: GoogleAppsScript.Spreadsheet.Sheet, row: number) {
@@ -347,7 +334,7 @@ function processCartIdRangeEdit_(
       continue;
     }
 
-    setPickerForMatches_(entrySheet, targetRow, searchValue, matches);
+    setPickerForMatches_(entrySheet, targetRow, matches);
   }
 }
 

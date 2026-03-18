@@ -91,7 +91,7 @@ function onEdit(e) {
         applyMatchToEntryRow_(sheet, row, matches[0]);
         return;
     }
-    setPickerForMatches_(sheet, row, searchValue, matches);
+    setPickerForMatches_(sheet, row, matches);
 }
 function findInventoryMatches_(inventorySheet, searchValue) {
     const activeInventory = getActiveInventoryMatches_(inventorySheet);
@@ -167,61 +167,47 @@ function applyMatchToEntryRow_(entrySheet, row, match) {
             match.length
         ]]);
 }
-function setPickerForMatches_(entrySheet, row, searchValue, matches) {
-    const options = matches.map((match, index) => formatPickerOption_(index, match));
+function setPickerForMatches_(entrySheet, row, matches) {
+    const options = matches.map((match) => formatPickerOption_(match));
     const rule = SpreadsheetApp.newDataValidation()
         .requireValueInList(options, true)
-        .setAllowInvalid(false)
-        .setHelpText("Select the matching inventory item.")
+        .setAllowInvalid(true)
         .build();
     const pickerCell = entrySheet.getRange(row, PICKER_COLUMN);
     pickerCell.clearContent();
+    pickerCell.clearNote();
     pickerCell.setDataValidation(rule);
-    pickerCell.setNote(JSON.stringify({ searchValue }));
 }
 function applyPickerSelection_(entrySheet, row, pickerValue) {
     if (!pickerValue)
         return;
-    const pickerCell = entrySheet.getRange(row, PICKER_COLUMN);
-    const note = pickerCell.getNote();
-    if (!note)
-        return;
-    const matchIndex = parsePickerIndex_(pickerValue);
-    if (matchIndex < 0)
-        return;
-    let metadata;
-    try {
-        metadata = JSON.parse(note);
-    }
-    catch {
+    const cartId = parsePickerCartId_(pickerValue);
+    if (!cartId) {
+        entrySheet.getRange(row, PICKER_COLUMN).clearContent();
         return;
     }
-    if (!metadata.searchValue)
-        return;
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
     if (!inventorySheet)
         return;
-    const matches = findInventoryMatches_(inventorySheet, metadata.searchValue);
-    if (matchIndex >= matches.length)
+    const activeInventory = getActiveInventoryMatches_(inventorySheet);
+    const selectedMatch = activeInventory.find((match) => match.cartId.trim().toLowerCase() === cartId.toLowerCase());
+    if (!selectedMatch)
         return;
-    applyMatchToEntryRow_(entrySheet, row, matches[matchIndex]);
+    applyMatchToEntryRow_(entrySheet, row, selectedMatch);
     clearPicker_(entrySheet, row);
 }
-function parsePickerIndex_(value) {
-    const indexMatch = value.match(/^\[(\d+)\]/);
-    if (!indexMatch)
-        return -1;
-    const zeroBasedIndex = Number(indexMatch[1]) - 1;
-    if (!Number.isInteger(zeroBasedIndex) || zeroBasedIndex < 0)
-        return -1;
-    return zeroBasedIndex;
+function parsePickerCartId_(value) {
+    const cartIdMatch = value.match(/\(([^()]*)\)\s*$/);
+    if (!cartIdMatch)
+        return "";
+    return cartIdMatch[1].trim();
 }
-function formatPickerOption_(index, match) {
+function formatPickerOption_(match) {
     const maxTitleLength = 45;
     const shortTitle = match.title.length > maxTitleLength
         ? `${match.title.slice(0, maxTitleLength - 3)}...`
         : match.title;
-    return `[${index + 1}] ${shortTitle} | ${match.cartId}`;
+    return `${shortTitle} (${match.cartId})`;
 }
 function clearPicker_(entrySheet, row) {
     const pickerCell = entrySheet.getRange(row, PICKER_COLUMN);
@@ -267,7 +253,7 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
             applyMatchToEntryRow_(entrySheet, targetRow, matches[0]);
             continue;
         }
-        setPickerForMatches_(entrySheet, targetRow, searchValue, matches);
+        setPickerForMatches_(entrySheet, targetRow, matches);
     }
 }
 function rangeIncludesColumn_(range, column) {
