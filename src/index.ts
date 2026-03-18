@@ -1,8 +1,19 @@
 const LOG_SHEET_NAMES = ["KIN_MON", "KIN_TUE", "KIN_WED", "KIN_THU", "KIN_FRI", "KIN_SAT"];
+const LOG_SHEET_NAME_PREFIX = "KIN_";
+const INDEX_SHEET_NAME = "Index";
 const INVENTORY_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_SOURCE_SPREADSHEET_ID = "1QYBk6N_RZygLDPWV8BjVpF2azXBCyvGNRuz9XvpakPE";
 const INVENTORY_IMPORT_SOURCE_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT = 7;
+const INDEX_HEADERS = ["Sheet Name", "Open", "Data Rows", "Last Column", "Sheet ID"];
+const DAY_NUMBER_TO_LOG_SHEET_NAME: Record<number, string> = {
+  1: "KIN_MON",
+  2: "KIN_TUE",
+  3: "KIN_WED",
+  4: "KIN_THU",
+  5: "KIN_FRI",
+  6: "KIN_SAT"
+};
 
 const INVENTORY_IMPORT_COLUMN_MAPPING: Array<{ sourceHeader: string; destinationIndex: number }> = [
   { sourceHeader: "Title", destinationIndex: 0 },
@@ -33,10 +44,178 @@ interface InventoryMatch {
 }
 
 function onOpen() {
-  SpreadsheetApp.getUi()
+  const ui = SpreadsheetApp.getUi();
+
+  ui
     .createMenu("KIN KAN Tools")
     .addItem("Sync Inventory", "syncInventoryFromExternalWorkbook")
+    .addSeparator()
+    .addItem("Open Index", "openIndexSheet")
+    .addItem("Refresh Index", "refreshIndexSheet")
+    .addSubMenu(
+      ui
+        .createMenu("Jump")
+        .addItem("Go To Today Log", "jumpToTodayLogSheet")
+        .addItem("Go To Next Log", "jumpToNextLogSheet")
+        .addItem("Go To Previous Log", "jumpToPreviousLogSheet")
+        .addItem("Go To Log By Name", "jumpToLogSheetByNamePrompt")
+    )
     .addToUi();
+}
+
+function openIndexSheet() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const indexSheet = getOrCreateIndexSheet_(spreadsheet);
+  refreshIndexSheet();
+  spreadsheet.setActiveSheet(indexSheet);
+}
+
+function refreshIndexSheet() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const indexSheet = getOrCreateIndexSheet_(spreadsheet);
+  const logSheets = getLogSheetsForNavigation_(spreadsheet);
+
+  indexSheet.clear();
+  indexSheet.getRange(1, 1, 1, INDEX_HEADERS.length).setValues([INDEX_HEADERS]);
+
+  if (logSheets.length > 0) {
+    const indexRows = logSheets.map((sheet) => {
+      const sheetId = sheet.getSheetId();
+      const openFormula = `=HYPERLINK("#gid=${sheetId}", "Open")`;
+      const dataRows = Math.max(sheet.getLastRow() - 1, 0);
+
+      return [
+        sheet.getName(),
+        openFormula,
+        dataRows,
+        sheet.getLastColumn(),
+        sheetId
+      ];
+    });
+
+    indexSheet
+      .getRange(2, 1, indexRows.length, INDEX_HEADERS.length)
+      .setValues(indexRows);
+  }
+
+  const headerRange = indexSheet.getRange(1, 1, 1, INDEX_HEADERS.length);
+  headerRange.setFontWeight("bold");
+  headerRange.setBackground("#dbe9ff");
+
+  indexSheet.setFrozenRows(1);
+  indexSheet.autoResizeColumns(1, INDEX_HEADERS.length);
+  spreadsheet.toast(`Index refreshed with ${logSheets.length} log sheet(s).`, "Index", 4);
+}
+
+function jumpToTodayLogSheet() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const todayLogSheetName = getTodayLogSheetName_();
+  if (!todayLogSheetName) {
+    spreadsheet.toast("No log sheet mapping exists for today.", "Jump", 5);
+    return;
+  }
+
+  const targetSheet = spreadsheet.getSheetByName(todayLogSheetName);
+  if (!targetSheet) {
+    spreadsheet.toast(`Sheet \"${todayLogSheetName}\" was not found.`, "Jump", 5);
+    return;
+  }
+
+  spreadsheet.setActiveSheet(targetSheet);
+}
+
+function jumpToNextLogSheet() {
+  jumpToRelativeLogSheet_(1);
+}
+
+function jumpToPreviousLogSheet() {
+  jumpToRelativeLogSheet_(-1);
+}
+
+function jumpToLogSheetByNamePrompt() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const logSheets = getLogSheetsForNavigation_(spreadsheet);
+
+  if (logSheets.length === 0) {
+    spreadsheet.toast("No log sheets were found.", "Jump", 5);
+    return;
+  }
+
+  const previewNames = logSheets
+    .slice(0, 8)
+    .map((sheet) => sheet.getName())
+    .join(", ");
+  const hiddenCount = logSheets.length - Math.min(logSheets.length, 8);
+  const promptMessage =
+    `Enter a log sheet name. Examples: ${previewNames}` +
+    (hiddenCount > 0 ? `, +${hiddenCount} more` : "");
+
+  const response = ui.prompt("Go To Log Sheet", promptMessage, ui.ButtonSet.OK_CANCEL);
+  if (response.getSelectedButton() !== ui.Button.OK) return;
+
+  const targetSheetName = response.getResponseText().trim();
+  if (!targetSheetName) return;
+
+  const targetSheet = spreadsheet.getSheetByName(targetSheetName);
+  if (!targetSheet || !isNavigableLogSheetName_(targetSheetName)) {
+    spreadsheet.toast(`Sheet \"${targetSheetName}\" is not a valid log sheet.`, "Jump", 5);
+    return;
+  }
+
+  spreadsheet.setActiveSheet(targetSheet);
+}
+
+function getOrCreateIndexSheet_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet
+): GoogleAppsScript.Spreadsheet.Sheet {
+  const existingIndexSheet = spreadsheet.getSheetByName(INDEX_SHEET_NAME);
+  if (existingIndexSheet) return existingIndexSheet;
+
+  const indexSheet = spreadsheet.insertSheet(INDEX_SHEET_NAME, 0);
+  indexSheet.getRange(1, 1).setValue("Log sheet index");
+  return indexSheet;
+}
+
+function getLogSheetsForNavigation_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet
+): GoogleAppsScript.Spreadsheet.Sheet[] {
+  return spreadsheet
+    .getSheets()
+    .filter((sheet) => isNavigableLogSheetName_(sheet.getName()))
+    .sort((left, right) => left.getName().localeCompare(right.getName()));
+}
+
+function isNavigableLogSheetName_(sheetName: string): boolean {
+  if (sheetName === INVENTORY_SHEET_NAME) return false;
+  if (sheetName === INDEX_SHEET_NAME) return false;
+  return sheetName.startsWith(LOG_SHEET_NAME_PREFIX);
+}
+
+function getTodayLogSheetName_(): string {
+  const dayNumber = Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "u"));
+  return DAY_NUMBER_TO_LOG_SHEET_NAME[dayNumber] ?? "";
+}
+
+function jumpToRelativeLogSheet_(direction: number): void {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheets = getLogSheetsForNavigation_(spreadsheet);
+  if (logSheets.length === 0) {
+    spreadsheet.toast("No log sheets were found.", "Jump", 5);
+    return;
+  }
+
+  const activeSheetName = spreadsheet.getActiveSheet().getName();
+  const currentIndex = logSheets.findIndex((sheet) => sheet.getName() === activeSheetName);
+
+  if (currentIndex < 0) {
+    const fallbackIndex = direction >= 0 ? 0 : logSheets.length - 1;
+    spreadsheet.setActiveSheet(logSheets[fallbackIndex]);
+    return;
+  }
+
+  const targetIndex = (currentIndex + direction + logSheets.length) % logSheets.length;
+  spreadsheet.setActiveSheet(logSheets[targetIndex]);
 }
 
 function syncInventoryFromExternalWorkbook() {
