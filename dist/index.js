@@ -1,18 +1,18 @@
-const LOG_SHEET_NAMES = ["KIN_MON", "KIN_TUE", "KIN_WED", "KIN_THU", "KIN_FRI", "KIN_SAT"];
-const LOG_SHEET_NAME_PREFIX = "KIN_";
+const LOG_SHEET_REQUIRED_TOKEN = "KIN";
+const LOG_SHEET_DAY_TOKENS = ["MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const INDEX_SHEET_NAME = "Index";
 const INVENTORY_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_SOURCE_SPREADSHEET_ID = "1QYBk6N_RZygLDPWV8BjVpF2azXBCyvGNRuz9XvpakPE";
 const INVENTORY_IMPORT_SOURCE_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT = 7;
 const INDEX_HEADERS = ["Sheet Name", "Open", "Data Rows", "Last Column", "Sheet ID"];
-const DAY_NUMBER_TO_LOG_SHEET_NAME = {
-    1: "KIN_MON",
-    2: "KIN_TUE",
-    3: "KIN_WED",
-    4: "KIN_THU",
-    5: "KIN_FRI",
-    6: "KIN_SAT"
+const DAY_NUMBER_TO_DAY_TOKEN = {
+    1: "MON",
+    2: "TUE",
+    3: "WED",
+    4: "THU",
+    5: "FRI",
+    6: "SAT"
 };
 const INVENTORY_IMPORT_COLUMN_MAPPING = [
     { sourceHeader: "Title", destinationIndex: 0 },
@@ -82,17 +82,21 @@ function refreshIndexSheet() {
 }
 function jumpToTodayLogSheet() {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-    const todayLogSheetName = getTodayLogSheetName_();
-    if (!todayLogSheetName) {
+    const todayDayToken = getTodayDayToken_();
+    if (!todayDayToken) {
         spreadsheet.toast("No log sheet mapping exists for today.", "Jump", 5);
         return;
     }
-    const targetSheet = spreadsheet.getSheetByName(todayLogSheetName);
-    if (!targetSheet) {
-        spreadsheet.toast(`Sheet \"${todayLogSheetName}\" was not found.`, "Jump", 5);
+    const candidateSheets = getLogSheetsForNavigation_(spreadsheet).filter((sheet) => sheet.getName().toUpperCase().includes(todayDayToken));
+    if (candidateSheets.length === 0) {
+        spreadsheet.toast(`No ${todayDayToken} log sheet was found.`, "Jump", 5);
         return;
     }
+    const targetSheet = candidateSheets[candidateSheets.length - 1];
     spreadsheet.setActiveSheet(targetSheet);
+    if (candidateSheets.length > 1) {
+        spreadsheet.toast(`Multiple ${todayDayToken} sheets found. Opened ${targetSheet.getName()}.`, "Jump", 5);
+    }
 }
 function jumpToNextLogSheet() {
     jumpToRelativeLogSheet_(1);
@@ -143,16 +147,19 @@ function getLogSheetsForNavigation_(spreadsheet) {
         .sort((left, right) => left.getName().localeCompare(right.getName()));
 }
 function isNavigableLogSheetName_(sheetName) {
-    if (sheetName === INVENTORY_SHEET_NAME)
+    const normalizedName = sheetName.trim().toUpperCase();
+    if (normalizedName === INVENTORY_SHEET_NAME.toUpperCase())
         return false;
-    if (sheetName === INDEX_SHEET_NAME)
+    if (normalizedName === INDEX_SHEET_NAME.toUpperCase())
         return false;
-    return sheetName.startsWith(LOG_SHEET_NAME_PREFIX);
+    if (!normalizedName.includes(LOG_SHEET_REQUIRED_TOKEN))
+        return false;
+    return LOG_SHEET_DAY_TOKENS.some((dayToken) => normalizedName.includes(dayToken));
 }
-function getTodayLogSheetName_() {
+function getTodayDayToken_() {
     var _a;
     const dayNumber = Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "u"));
-    return (_a = DAY_NUMBER_TO_LOG_SHEET_NAME[dayNumber]) !== null && _a !== void 0 ? _a : "";
+    return (_a = DAY_NUMBER_TO_DAY_TOKEN[dayNumber]) !== null && _a !== void 0 ? _a : "";
 }
 function jumpToRelativeLogSheet_(direction) {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
@@ -437,7 +444,7 @@ function showInvalidCartToast_(entrySheet, invalidCarts) {
     spreadsheet.toast(message, "Invalid Cart IDs", 8);
 }
 function isLogSheetName_(sheetName) {
-    return LOG_SHEET_NAMES.includes(sheetName);
+    return isNavigableLogSheetName_(sheetName);
 }
 function markCartIdAsValid_(entrySheet, row) {
     entrySheet.getRange(row, CART_ID_COLUMN).setFontColor(VALID_CART_ID_FONT_COLOR);
