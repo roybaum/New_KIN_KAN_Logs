@@ -228,6 +228,7 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
     const values = editedRange.getValues();
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
     const activeInventory = inventorySheet ? getActiveInventoryMatches_(inventorySheet) : [];
+    const invalidCarts = [];
     for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {
         const targetRow = editedRange.getRow() + rowOffset;
         if (targetRow < 2)
@@ -242,8 +243,10 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
             continue;
         const searchValue = String(cartIdValue).trim().toLowerCase();
         const matches = findMatchesInInventory_(activeInventory, searchValue);
-        if (matches.length === 0)
+        if (matches.length === 0) {
+            invalidCarts.push({ row: targetRow, cartId: String(cartIdValue).trim() });
             continue;
+        }
         const exactMatch = matches.find((match) => match.cartId.toLowerCase() === searchValue);
         if (exactMatch) {
             applyMatchToEntryRow_(entrySheet, targetRow, exactMatch);
@@ -255,6 +258,27 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
         }
         setPickerForMatches_(entrySheet, targetRow, matches);
     }
+    if (invalidCarts.length > 0) {
+        showInvalidCartToast_(entrySheet, invalidCarts);
+    }
+}
+function showInvalidCartToast_(entrySheet, invalidCarts) {
+    const spreadsheet = entrySheet.getParent();
+    if (invalidCarts.length === 1) {
+        const invalidCart = invalidCarts[0];
+        const message = `Row ${invalidCart.row}: Cart ID "${invalidCart.cartId}" is invalid ` +
+            "(missing or out of date).";
+        spreadsheet.toast(message, "Invalid Cart ID", 6);
+        return;
+    }
+    const preview = invalidCarts
+        .slice(0, 3)
+        .map((item) => `R${item.row}: ${item.cartId}`)
+        .join(", ");
+    const remainingCount = invalidCarts.length - Math.min(invalidCarts.length, 3);
+    const suffix = remainingCount > 0 ? `, +${remainingCount} more` : "";
+    const message = `${invalidCarts.length} invalid Cart IDs: ${preview}${suffix}.`;
+    spreadsheet.toast(message, "Invalid Cart IDs", 8);
 }
 function rangeIncludesColumn_(range, column) {
     const startColumn = range.getColumn();
