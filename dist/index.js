@@ -25,7 +25,11 @@ const INVENTORY_IMPORT_COLUMN_MAPPING = [
 ];
 const TITLE_COLUMN = 4; // D
 const CART_ID_COLUMN = 7; // G
+const LENGTH_COLUMN = 8; // H
 const PICKER_COLUMN = 9; // I
+const DEFAULT_TIME_COLUMN = 2; // B
+const REQUIRED_BREAK_SECONDS = 60;
+const BREAK_SECONDS_TOLERANCE = 0.5;
 const VALID_CART_ID_FONT_COLOR = "#000000";
 const INVALID_CART_ID_FONT_COLOR = "#d93025";
 function onOpen() {
@@ -33,6 +37,7 @@ function onOpen() {
     ui
         .createMenu("KIN KAN Tools")
         .addItem("Sync Inventory", "syncInventoryFromExternalWorkbook")
+        .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
         .addSeparator()
         .addItem("Open Index", "openIndexSheet")
         .addItem("Refresh Index", "refreshIndexSheet")
@@ -207,48 +212,66 @@ function syncInventoryFromExternalWorkbook() {
     writeInventoryRows_(destinationSheet, mappedRows);
     Logger.log(`Inventory sync complete. Imported ${mappedRows.length} row(s).`);
 }
+function checkActiveLogSheetBreakDurations() {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const activeSheet = spreadsheet.getActiveSheet();
+    if (!isLogSheetName_(activeSheet.getName())) {
+        spreadsheet.toast("Break length check works on KIN log sheets only.", "Duration Check", 5);
+        return;
+    }
+    validateLogSheetBreakDurations_(activeSheet);
+}
 function onEdit(e) {
     if (!e)
         return;
     const sheet = e.range.getSheet();
     if (!isLogSheetName_(sheet.getName()))
         return;
-    const row = e.range.getRow();
-    const col = e.range.getColumn();
-    if (row < 2)
+    const firstEditedRow = e.range.getRow();
+    const lastEditedRow = firstEditedRow + e.range.getNumRows() - 1;
+    if (lastEditedRow < 2)
         return;
-    const singleCellEdit = isSingleCellEdit_(e.range);
-    const cartIdRangeEdited = rangeIncludesColumn_(e.range, CART_ID_COLUMN);
-    if (cartIdRangeEdited) {
-        processCartIdRangeEdit_(sheet, e.range);
-        if (!singleCellEdit || col === CART_ID_COLUMN)
+    try {
+        const row = e.range.getRow();
+        const col = e.range.getColumn();
+        if (row < 2)
             return;
+        const singleCellEdit = isSingleCellEdit_(e.range);
+        const cartIdRangeEdited = rangeIncludesColumn_(e.range, CART_ID_COLUMN);
+        if (cartIdRangeEdited) {
+            processCartIdRangeEdit_(sheet, e.range);
+            if (!singleCellEdit || col === CART_ID_COLUMN)
+                return;
+        }
+        if (!singleCellEdit)
+            return;
+        if (col === PICKER_COLUMN) {
+            applyPickerSelection_(sheet, row, String(e.value || ""));
+            return;
+        }
+        // Only respond to Title (D) here. Cart ID (G) is handled above.
+        if (col !== TITLE_COLUMN)
+            return;
+        clearPicker_(sheet, row);
+        const searchValue = String(e.value || "").trim().toLowerCase();
+        if (!searchValue)
+            return;
+        const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
+        if (!inventorySheet)
+            return;
+        const activeInventory = getActiveInventoryMatches_(inventorySheet);
+        const matches = findMatchesInInventory_(activeInventory, searchValue);
+        if (matches.length === 0)
+            return;
+        if (matches.length === 1) {
+            applyMatchToEntryRow_(sheet, row, matches[0]);
+            return;
+        }
+        setPickerForMatches_(sheet, row, matches);
     }
-    if (!singleCellEdit)
-        return;
-    if (col === PICKER_COLUMN) {
-        applyPickerSelection_(sheet, row, String(e.value || ""));
-        return;
+    finally {
+        validateLogSheetBreakDurations_(sheet, e.range);
     }
-    // Only respond to Title (D) here. Cart ID (G) is handled above.
-    if (col !== TITLE_COLUMN)
-        return;
-    clearPicker_(sheet, row);
-    const searchValue = String(e.value || "").trim().toLowerCase();
-    if (!searchValue)
-        return;
-    const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
-    if (!inventorySheet)
-        return;
-    const activeInventory = getActiveInventoryMatches_(inventorySheet);
-    const matches = findMatchesInInventory_(activeInventory, searchValue);
-    if (matches.length === 0)
-        return;
-    if (matches.length === 1) {
-        applyMatchToEntryRow_(sheet, row, matches[0]);
-        return;
-    }
-    setPickerForMatches_(sheet, row, matches);
 }
 function findInventoryMatches_(inventorySheet, searchValue) {
     const activeInventory = getActiveInventoryMatches_(inventorySheet);
@@ -442,6 +465,215 @@ function showInvalidCartToast_(entrySheet, invalidCarts) {
     const suffix = remainingCount > 0 ? `, +${remainingCount} more` : "";
     const message = `${invalidCarts.length} invalid Cart IDs: ${preview}${suffix}.`;
     spreadsheet.toast(message, "Invalid Cart IDs", 8);
+}
+function validateLogSheetBreakDurations_(logSheet, editedRange) {
+    var _a;
+    const lastRow = logSheet.getLastRow();
+    if (lastRow < 2) {
+        if (!editedRange) {
+            logSheet.getParent().toast("No log rows to validate.", "Duration Check", 4);
+        }
+        return;
+    }
+    const rowCount = lastRow - 1;
+    const timeColumn = findTimeColumnIndex_(logSheet);
+    const timeValues = logSheet.getRange(2, timeColumn, rowCount, 1).getValues();
+    const titleValues = logSheet.getRange(2, TITLE_COLUMN, rowCount, 1).getValues();
+    const cartValues = logSheet.getRange(2, CART_ID_COLUMN, rowCount, 1).getValues();
+    const lengthValues = logSheet.getRange(2, LENGTH_COLUMN, rowCount, 1).getValues();
+    const groups = {};
+    for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
+        const timeValue = timeValues[rowOffset][0];
+        const timeKey = normalizeTimeSlotKey_(timeValue);
+        if (!timeKey)
+            continue;
+        const rowNumber = rowOffset + 2;
+        const group = (_a = groups[timeKey]) !== null && _a !== void 0 ? _a : {
+            rows: [],
+            totalSeconds: 0,
+            hasCommercialData: false,
+            displayTime: formatTimeSlotDisplay_(timeValue)
+        };
+        const lengthValue = lengthValues[rowOffset][0];
+        const parsedLengthSeconds = parseLengthSeconds_(lengthValue);
+        if (parsedLengthSeconds !== null) {
+            group.totalSeconds += parsedLengthSeconds;
+        }
+        const hasCommercialData = !isCellValueBlank_(titleValues[rowOffset][0]) ||
+            !isCellValueBlank_(cartValues[rowOffset][0]) ||
+            !isCellValueBlank_(lengthValue);
+        group.hasCommercialData = group.hasCommercialData || hasCommercialData;
+        group.rows.push(rowNumber);
+        groups[timeKey] = group;
+    }
+    const invalidRows = new Set();
+    const invalidGroups = [];
+    for (const group of Object.values(groups)) {
+        if (!group.hasCommercialData)
+            continue;
+        if (Math.abs(group.totalSeconds - REQUIRED_BREAK_SECONDS) <= BREAK_SECONDS_TOLERANCE)
+            continue;
+        invalidGroups.push({
+            displayTime: group.displayTime,
+            totalSeconds: group.totalSeconds
+        });
+        for (const rowNumber of group.rows) {
+            invalidRows.add(rowNumber);
+        }
+    }
+    const timeFontColors = Array.from({ length: rowCount }, () => [VALID_CART_ID_FONT_COLOR]);
+    const lengthFontColors = Array.from({ length: rowCount }, () => [VALID_CART_ID_FONT_COLOR]);
+    for (const rowNumber of invalidRows) {
+        const rowOffset = rowNumber - 2;
+        if (rowOffset < 0 || rowOffset >= rowCount)
+            continue;
+        timeFontColors[rowOffset][0] = INVALID_CART_ID_FONT_COLOR;
+        lengthFontColors[rowOffset][0] = INVALID_CART_ID_FONT_COLOR;
+    }
+    logSheet.getRange(2, timeColumn, rowCount, 1).setFontColors(timeFontColors);
+    logSheet.getRange(2, LENGTH_COLUMN, rowCount, 1).setFontColors(lengthFontColors);
+    if (invalidGroups.length === 0) {
+        if (!editedRange) {
+            logSheet
+                .getParent()
+                .toast(`All active break groups total ${REQUIRED_BREAK_SECONDS} seconds.`, "Duration Check", 4);
+        }
+        return;
+    }
+    if (editedRange) {
+        const editedRows = getEditedDataRows_(editedRange);
+        const intersectsInvalidRows = editedRows.some((rowNumber) => invalidRows.has(rowNumber));
+        if (!intersectsInvalidRows)
+            return;
+    }
+    showInvalidBreakDurationToast_(logSheet, invalidGroups);
+}
+function showInvalidBreakDurationToast_(logSheet, invalidGroups) {
+    const preview = invalidGroups
+        .slice(0, 3)
+        .map((group) => `${group.displayTime}: ${formatBreakSeconds_(group.totalSeconds)}s`)
+        .join(", ");
+    const remainingCount = invalidGroups.length - Math.min(invalidGroups.length, 3);
+    const suffix = remainingCount > 0 ? `, +${remainingCount} more` : "";
+    const message = `${invalidGroups.length} time slot(s) are not ${REQUIRED_BREAK_SECONDS}s: ` +
+        `${preview}${suffix}.`;
+    logSheet.getParent().toast(message, "Duration Check", 8);
+}
+function findTimeColumnIndex_(logSheet) {
+    const lastColumn = Math.max(logSheet.getLastColumn(), DEFAULT_TIME_COLUMN);
+    if (lastColumn < 1)
+        return DEFAULT_TIME_COLUMN;
+    const headers = logSheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    const normalizedHeaders = headers.map((value) => normalizeHeaderKey_(value));
+    const candidates = ["time", "logtime", "airtime", "starttime"];
+    for (const candidate of candidates) {
+        const headerIndex = normalizedHeaders.indexOf(candidate);
+        if (headerIndex < 0)
+            continue;
+        return headerIndex + 1;
+    }
+    return DEFAULT_TIME_COLUMN;
+}
+function normalizeTimeSlotKey_(value) {
+    if (value === null || value === "")
+        return "";
+    if (value instanceof Date) {
+        return Utilities.formatDate(value, Session.getScriptTimeZone(), "HH:mm:ss");
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+        if (value >= 0 && value < 1) {
+            const totalSeconds = Math.round(value * 24 * 60 * 60);
+            return `time:${totalSeconds}`;
+        }
+        return String(value);
+    }
+    const textValue = String(value).trim();
+    if (!textValue)
+        return "";
+    const parsedSeconds = extractTimeOfDaySeconds_(textValue);
+    if (parsedSeconds !== null)
+        return `time:${parsedSeconds}`;
+    return textValue.toUpperCase();
+}
+function extractTimeOfDaySeconds_(value) {
+    const normalizedValue = value.trim().toUpperCase();
+    const match = normalizedValue.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)?$/);
+    if (!match)
+        return null;
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    const seconds = Number(match[3] || "0");
+    const meridiem = match[4] || "";
+    if (!Number.isInteger(hours) || !Number.isInteger(minutes) || !Number.isInteger(seconds))
+        return null;
+    if (minutes < 0 || minutes > 59 || seconds < 0 || seconds > 59)
+        return null;
+    let normalizedHours = hours;
+    if (meridiem) {
+        if (hours < 1 || hours > 12)
+            return null;
+        normalizedHours = hours % 12;
+        if (meridiem === "PM")
+            normalizedHours += 12;
+    }
+    else if (hours < 0 || hours > 23) {
+        return null;
+    }
+    return normalizedHours * 60 * 60 + minutes * 60 + seconds;
+}
+function formatTimeSlotDisplay_(value) {
+    if (value instanceof Date) {
+        return Utilities.formatDate(value, Session.getScriptTimeZone(), "HH:mm:ss");
+    }
+    const textValue = String(value !== null && value !== void 0 ? value : "").trim();
+    if (!textValue)
+        return "(blank time)";
+    return textValue;
+}
+function parseLengthSeconds_(value) {
+    if (value === null || value === "")
+        return null;
+    if (typeof value === "number" && Number.isFinite(value)) {
+        if (value >= 0 && value < 1) {
+            return value * 24 * 60 * 60;
+        }
+        return value;
+    }
+    if (value instanceof Date) {
+        return value.getHours() * 60 * 60 + value.getMinutes() * 60 + value.getSeconds();
+    }
+    const textValue = String(value).trim();
+    if (!textValue)
+        return null;
+    const timeMatch = textValue.match(/^(\d+):(\d{1,2})(?::(\d{1,2}))?$/);
+    if (timeMatch) {
+        const first = Number(timeMatch[1]);
+        const second = Number(timeMatch[2]);
+        const third = Number(timeMatch[3] || "0");
+        if (!timeMatch[3]) {
+            return first * 60 + second;
+        }
+        return first * 60 * 60 + second * 60 + third;
+    }
+    const numericValue = Number(textValue.replace(/\s*s$/i, ""));
+    if (Number.isFinite(numericValue))
+        return numericValue;
+    return null;
+}
+function getEditedDataRows_(editedRange) {
+    const rows = [];
+    const firstRow = Math.max(editedRange.getRow(), 2);
+    const lastRow = editedRange.getRow() + editedRange.getNumRows() - 1;
+    for (let row = firstRow; row <= lastRow; row++) {
+        rows.push(row);
+    }
+    return rows;
+}
+function formatBreakSeconds_(seconds) {
+    const roundedSeconds = Math.round(seconds * 10) / 10;
+    if (Number.isInteger(roundedSeconds))
+        return String(roundedSeconds);
+    return roundedSeconds.toFixed(1);
 }
 function isLogSheetName_(sheetName) {
     return isNavigableLogSheetName_(sheetName);
