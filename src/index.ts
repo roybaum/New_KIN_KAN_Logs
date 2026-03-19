@@ -5,7 +5,13 @@ const INVENTORY_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_SOURCE_SPREADSHEET_ID = "1QYBk6N_RZygLDPWV8BjVpF2azXBCyvGNRuz9XvpakPE";
 const INVENTORY_IMPORT_SOURCE_SHEET_NAME = "Inventory";
 const INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT = 7;
-const INDEX_HEADERS = ["Sheet Name", "Open", "Data Rows", "Last Column", "Sheet ID"];
+const INDEX_HEADERS = ["Sheet Name", "Go"];
+const INDEX_SHEET_NAME_COLUMN = 1;
+const INDEX_NAVIGATION_COLUMN = 2;
+const INDEX_SHEET_NAME_MIN_WIDTH_PX = 180;
+const INDEX_SHEET_NAME_MAX_WIDTH_PX = 900;
+const INDEX_SHEET_NAME_CHAR_WIDTH_PX = 9;
+const INDEX_SHEET_NAME_PADDING_PX = 36;
 const DAY_NUMBER_TO_DAY_TOKEN: Record<number, string> = {
   1: "MON",
   2: "TUE",
@@ -73,34 +79,32 @@ function openIndexSheet() {
   const indexSheet = getOrCreateIndexSheet_(spreadsheet);
   refreshIndexSheet();
   spreadsheet.setActiveSheet(indexSheet);
+  indexSheet.setActiveSelection("A1");
 }
 
 function refreshIndexSheet() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const indexSheet = getOrCreateIndexSheet_(spreadsheet);
   const logSheets = getLogSheetsForNavigation_(spreadsheet);
+  const longestSheetNameLength = getLongestSheetNameLength_(logSheets);
 
   indexSheet.clear();
   indexSheet.getRange(1, 1, 1, INDEX_HEADERS.length).setValues([INDEX_HEADERS]);
 
   if (logSheets.length > 0) {
     const indexRows = logSheets.map((sheet) => {
-      const sheetId = sheet.getSheetId();
-      const openFormula = `=HYPERLINK("#gid=${sheetId}", "Open")`;
-      const dataRows = Math.max(sheet.getLastRow() - 1, 0);
-
-      return [
-        sheet.getName(),
-        openFormula,
-        dataRows,
-        sheet.getLastColumn(),
-        sheetId
-      ];
+      return [sheet.getName(), false];
     });
 
     indexSheet
       .getRange(2, 1, indexRows.length, INDEX_HEADERS.length)
       .setValues(indexRows);
+
+    indexSheet
+      .getRange(2, INDEX_SHEET_NAME_COLUMN, indexRows.length, 1)
+      .setFontColor("#000000");
+
+    formatIndexGoColumn_(indexSheet, indexRows.length);
   }
 
   const headerRange = indexSheet.getRange(1, 1, 1, INDEX_HEADERS.length);
@@ -108,8 +112,62 @@ function refreshIndexSheet() {
   headerRange.setBackground("#dbe9ff");
 
   indexSheet.setFrozenRows(1);
-  indexSheet.autoResizeColumns(1, INDEX_HEADERS.length);
+  autoFitIndexSheetNameColumn_(indexSheet, longestSheetNameLength);
+
+  if (INDEX_HEADERS.length > 1) {
+    indexSheet.autoResizeColumns(2, INDEX_HEADERS.length - 1);
+  }
+
+  indexSheet.setActiveSelection("A1");
   spreadsheet.toast(`Index refreshed with ${logSheets.length} log sheet(s).`, "Index", 4);
+}
+
+function getLongestSheetNameLength_(
+  logSheets: GoogleAppsScript.Spreadsheet.Sheet[]
+): number {
+  let longestLength = INDEX_HEADERS[0].length;
+
+  for (const sheet of logSheets) {
+    const sheetNameLength = sheet.getName().length;
+    if (sheetNameLength > longestLength) {
+      longestLength = sheetNameLength;
+    }
+  }
+
+  return longestLength;
+}
+
+function autoFitIndexSheetNameColumn_(
+  indexSheet: GoogleAppsScript.Spreadsheet.Sheet,
+  longestSheetNameLength: number
+): void {
+  SpreadsheetApp.flush();
+  indexSheet.autoResizeColumn(INDEX_SHEET_NAME_COLUMN);
+
+  const estimatedWidth = Math.round(
+    longestSheetNameLength * INDEX_SHEET_NAME_CHAR_WIDTH_PX + INDEX_SHEET_NAME_PADDING_PX
+  );
+  const constrainedWidth = Math.min(
+    INDEX_SHEET_NAME_MAX_WIDTH_PX,
+    Math.max(INDEX_SHEET_NAME_MIN_WIDTH_PX, estimatedWidth)
+  );
+
+  if (indexSheet.getColumnWidth(INDEX_SHEET_NAME_COLUMN) >= constrainedWidth) return;
+
+  indexSheet.setColumnWidth(INDEX_SHEET_NAME_COLUMN, constrainedWidth);
+}
+
+function formatIndexGoColumn_(
+  indexSheet: GoogleAppsScript.Spreadsheet.Sheet,
+  rowCount: number
+): void {
+  if (rowCount < 1) return;
+
+  const goRange = indexSheet.getRange(2, INDEX_NAVIGATION_COLUMN, rowCount, 1);
+  goRange.insertCheckboxes();
+  goRange.setHorizontalAlignment("center");
+  goRange.setBackground("#e8f0fe");
+  goRange.setFontWeight("bold");
 }
 
 function jumpToTodayLogSheet() {
@@ -289,7 +347,7 @@ function checkActiveLogSheetBreakDurations() {
   const activeSheet = spreadsheet.getActiveSheet();
 
   if (!isLogSheetName_(activeSheet.getName())) {
-    spreadsheet.toast("Break length check works on KIN log sheets only.", "Duration Check", 5);
+    spreadsheet.toast("Break length check works on KIN/KAN log sheets only.", "Duration Check", 5);
     return;
   }
 
@@ -300,7 +358,14 @@ function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
   if (!e) return;
 
   const sheet = e.range.getSheet();
-  if (!isLogSheetName_(sheet.getName())) return;
+  const sheetName = sheet.getName();
+
+  if (sheetName === INDEX_SHEET_NAME) {
+    handleIndexGoEdit_(sheet, e.range, e.value);
+    return;
+  }
+
+  if (!isLogSheetName_(sheetName)) return;
 
   const firstEditedRow = e.range.getRow();
   const lastEditedRow = firstEditedRow + e.range.getNumRows() - 1;
@@ -350,6 +415,62 @@ function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
   } finally {
     validateLogSheetBreakDurations_(sheet, e.range);
   }
+}
+
+function handleIndexGoEdit_(
+  indexSheet: GoogleAppsScript.Spreadsheet.Sheet,
+  editedRange: GoogleAppsScript.Spreadsheet.Range,
+  editedValue: string | undefined
+): void {
+  if (!isSingleCellEdit_(editedRange)) return;
+  if (editedRange.getRow() < 2) return;
+  if (editedRange.getColumn() !== INDEX_NAVIGATION_COLUMN) return;
+
+  const isChecked = String(editedValue || "").toUpperCase() === "TRUE";
+  if (!isChecked) return;
+
+  enforceSingleIndexGoSelection_(indexSheet, editedRange.getRow());
+
+  const targetSheetName = String(
+    indexSheet.getRange(editedRange.getRow(), INDEX_SHEET_NAME_COLUMN).getDisplayValue()
+  ).trim();
+
+  if (!targetSheetName) {
+    editedRange.setValue(false);
+    return;
+  }
+
+  const spreadsheet = indexSheet.getParent();
+  const targetSheet = spreadsheet.getSheetByName(targetSheetName);
+  if (!targetSheet) {
+    editedRange.setValue(false);
+    spreadsheet.toast(`Sheet "${targetSheetName}" was not found.`, "Index", 5);
+    return;
+  }
+
+  spreadsheet.setActiveSheet(targetSheet);
+}
+
+function enforceSingleIndexGoSelection_(
+  indexSheet: GoogleAppsScript.Spreadsheet.Sheet,
+  selectedRow: number
+): void {
+  const lastRow = indexSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  if (selectedRow > 2) {
+    indexSheet
+      .getRange(2, INDEX_NAVIGATION_COLUMN, selectedRow - 2, 1)
+      .setValue(false);
+  }
+
+  if (selectedRow < lastRow) {
+    indexSheet
+      .getRange(selectedRow + 1, INDEX_NAVIGATION_COLUMN, lastRow - selectedRow, 1)
+      .setValue(false);
+  }
+
+  indexSheet.getRange(selectedRow, INDEX_NAVIGATION_COLUMN).setValue(true);
 }
 
 function findInventoryMatches_(
