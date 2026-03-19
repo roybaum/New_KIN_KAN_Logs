@@ -1,4 +1,4 @@
-const LOG_SHEET_REQUIRED_TOKEN = "KIN";
+const LOG_SHEET_REQUIRED_TOKENS = ["KIN", "KAN"];
 const LOG_SHEET_DAY_TOKENS = ["MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const INDEX_SHEET_NAME = "Index";
 const INVENTORY_SHEET_NAME = "Inventory";
@@ -157,9 +157,13 @@ function isNavigableLogSheetName_(sheetName) {
         return false;
     if (normalizedName === INDEX_SHEET_NAME.toUpperCase())
         return false;
-    if (!normalizedName.includes(LOG_SHEET_REQUIRED_TOKEN))
-        return false;
-    return LOG_SHEET_DAY_TOKENS.some((dayToken) => normalizedName.includes(dayToken));
+    return LOG_SHEET_REQUIRED_TOKENS.some((token) => hasStandaloneSheetToken_(normalizedName, token));
+}
+function hasStandaloneSheetToken_(normalizedSheetName, token) {
+    if (normalizedSheetName.startsWith(token))
+        return true;
+    const tokenRegex = new RegExp(`(^|[^A-Z])${token}([^A-Z]|$)`);
+    return tokenRegex.test(normalizedSheetName);
 }
 function getTodayDayToken_() {
     var _a;
