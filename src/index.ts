@@ -64,6 +64,7 @@ function onOpen() {
     .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
     .addSeparator()
     .addItem("Open Index", "openIndexSheet")
+    .addItem("Show Index Only", "showIndexOnly")
     .addItem("Refresh Index", "refreshIndexSheet")
     .addSubMenu(
       ui
@@ -102,7 +103,8 @@ function openLogSheetFromDialog(sheetName: string): { success: boolean; message:
     return { success: false, message: `Sheet \"${targetSheetName}\" is not a valid log sheet.` };
   }
 
-  spreadsheet.setActiveSheet(targetSheet);
+  activateSheet_(spreadsheet, targetSheet);
+  setIndexSheetVisibilityFlag_(spreadsheet, targetSheetName, true);
   return { success: true, message: `Opened ${targetSheetName}.` };
 }
 
@@ -110,8 +112,33 @@ function openIndexSheet() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const indexSheet = getOrCreateIndexSheet_(spreadsheet);
   refreshIndexSheet();
-  spreadsheet.setActiveSheet(indexSheet);
+  activateSheet_(spreadsheet, indexSheet);
   indexSheet.setActiveSelection("A1");
+}
+
+function showIndexOnly() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const indexSheet = getOrCreateIndexSheet_(spreadsheet);
+
+  activateSheet_(spreadsheet, indexSheet);
+
+  let hiddenCount = 0;
+  for (const sheet of spreadsheet.getSheets()) {
+    if (sheet.getSheetId() === indexSheet.getSheetId()) continue;
+    if (sheet.isSheetHidden()) continue;
+    sheet.hideSheet();
+    hiddenCount++;
+  }
+
+  const lastRow = indexSheet.getLastRow();
+  if (lastRow >= 2) {
+    indexSheet
+      .getRange(2, INDEX_NAVIGATION_COLUMN, lastRow - 1, 1)
+      .setValue(false);
+  }
+
+  indexSheet.setActiveSelection("A1");
+  spreadsheet.toast(`Index is now the only visible sheet. Hid ${hiddenCount} sheet(s).`, "Index", 4);
 }
 
 function refreshIndexSheet() {
@@ -125,7 +152,7 @@ function refreshIndexSheet() {
 
   if (logSheets.length > 0) {
     const indexRows = logSheets.map((sheet) => {
-      return [sheet.getName(), false];
+      return [sheet.getName(), !sheet.isSheetHidden()];
     });
 
     indexSheet
@@ -219,7 +246,7 @@ function jumpToTodayLogSheet() {
   }
 
   const targetSheet = candidateSheets[candidateSheets.length - 1];
-  spreadsheet.setActiveSheet(targetSheet);
+  activateSheet_(spreadsheet, targetSheet);
 
   if (candidateSheets.length > 1) {
     spreadsheet.toast(
@@ -269,7 +296,7 @@ function jumpToLogSheetByNamePrompt() {
     return;
   }
 
-  spreadsheet.setActiveSheet(targetSheet);
+  activateSheet_(spreadsheet, targetSheet);
 }
 
 function getOrCreateIndexSheet_(
@@ -281,6 +308,42 @@ function getOrCreateIndexSheet_(
   const indexSheet = spreadsheet.insertSheet(INDEX_SHEET_NAME, 0);
   indexSheet.getRange(1, 1).setValue("Log sheet index");
   return indexSheet;
+}
+
+function activateSheet_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  targetSheet: GoogleAppsScript.Spreadsheet.Sheet
+): void {
+  if (targetSheet.isSheetHidden()) {
+    targetSheet.showSheet();
+  }
+
+  spreadsheet.setActiveSheet(targetSheet);
+}
+
+function setIndexSheetVisibilityFlag_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  sheetName: string,
+  isVisible: boolean
+): void {
+  const indexSheet = spreadsheet.getSheetByName(INDEX_SHEET_NAME);
+  if (!indexSheet) return;
+
+  const lastRow = indexSheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const names = indexSheet
+    .getRange(2, INDEX_SHEET_NAME_COLUMN, lastRow - 1, 1)
+    .getDisplayValues();
+
+  for (let rowOffset = 0; rowOffset < names.length; rowOffset++) {
+    if (String(names[rowOffset][0]).trim() !== sheetName) continue;
+
+    indexSheet
+      .getRange(rowOffset + 2, INDEX_NAVIGATION_COLUMN)
+      .setValue(isVisible);
+    return;
+  }
 }
 
 function getLogSheetsForNavigation_(
@@ -325,12 +388,12 @@ function jumpToRelativeLogSheet_(direction: number): void {
 
   if (currentIndex < 0) {
     const fallbackIndex = direction >= 0 ? 0 : logSheets.length - 1;
-    spreadsheet.setActiveSheet(logSheets[fallbackIndex]);
+    activateSheet_(spreadsheet, logSheets[fallbackIndex]);
     return;
   }
 
   const targetIndex = (currentIndex + direction + logSheets.length) % logSheets.length;
-  spreadsheet.setActiveSheet(logSheets[targetIndex]);
+  activateSheet_(spreadsheet, logSheets[targetIndex]);
 }
 
 function syncInventoryFromExternalWorkbook() {
@@ -458,51 +521,38 @@ function handleIndexGoEdit_(
   if (editedRange.getRow() < 2) return;
   if (editedRange.getColumn() !== INDEX_NAVIGATION_COLUMN) return;
 
-  const isChecked = String(editedValue || "").toUpperCase() === "TRUE";
-  if (!isChecked) return;
-
-  enforceSingleIndexGoSelection_(indexSheet, editedRange.getRow());
-
   const targetSheetName = String(
     indexSheet.getRange(editedRange.getRow(), INDEX_SHEET_NAME_COLUMN).getDisplayValue()
   ).trim();
 
-  if (!targetSheetName) {
-    editedRange.setValue(false);
-    return;
-  }
+  if (!targetSheetName) return;
 
   const spreadsheet = indexSheet.getParent();
   const targetSheet = spreadsheet.getSheetByName(targetSheetName);
-  if (!targetSheet) {
-    editedRange.setValue(false);
-    spreadsheet.toast(`Sheet "${targetSheetName}" was not found.`, "Index", 5);
+  if (!targetSheet || !isNavigableLogSheetName_(targetSheetName)) {
     return;
   }
 
-  spreadsheet.setActiveSheet(targetSheet);
-}
+  const normalizedValue = String(editedValue || "").toUpperCase();
 
-function enforceSingleIndexGoSelection_(
-  indexSheet: GoogleAppsScript.Spreadsheet.Sheet,
-  selectedRow: number
-): void {
-  const lastRow = indexSheet.getLastRow();
-  if (lastRow < 2) return;
-
-  if (selectedRow > 2) {
-    indexSheet
-      .getRange(2, INDEX_NAVIGATION_COLUMN, selectedRow - 2, 1)
-      .setValue(false);
+  if (normalizedValue === "TRUE") {
+    if (targetSheet.isSheetHidden()) {
+      targetSheet.showSheet();
+    }
+    return;
   }
 
-  if (selectedRow < lastRow) {
-    indexSheet
-      .getRange(selectedRow + 1, INDEX_NAVIGATION_COLUMN, lastRow - selectedRow, 1)
-      .setValue(false);
+  if (normalizedValue !== "FALSE") return;
+  if (targetSheet.isSheetHidden()) return;
+
+  const activeSheet = spreadsheet.getActiveSheet();
+  if (activeSheet.getSheetId() === targetSheet.getSheetId()) {
+    const safeSheet = getOrCreateIndexSheet_(spreadsheet);
+    activateSheet_(spreadsheet, safeSheet);
+    safeSheet.setActiveSelection("A1");
   }
 
-  indexSheet.getRange(selectedRow, INDEX_NAVIGATION_COLUMN).setValue(true);
+  targetSheet.hideSheet();
 }
 
 function findInventoryMatches_(
