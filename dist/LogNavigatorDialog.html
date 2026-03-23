@@ -1,0 +1,369 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --ink: #1f1f24;
+        --muted: #5e6472;
+        --bg: #f5f7fb;
+        --panel: #ffffff;
+        --line: #d6dde8;
+        --brand: #0d6e6e;
+        --brand-2: #f2a65a;
+        --danger: #bd3f3f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(1200px 480px at 0% 0%, #e4f6f4 0%, transparent 60%),
+          radial-gradient(900px 420px at 100% 100%, #fff1e2 0%, transparent 55%),
+          var(--bg);
+      }
+
+      .wrap {
+        padding: 14px;
+      }
+
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 10px 26px rgba(16, 37, 59, 0.08);
+      }
+
+      .header {
+        padding: 14px 16px 10px;
+        background: linear-gradient(135deg, #e7f8f6 0%, #fff4e8 100%);
+        border-bottom: 1px solid var(--line);
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+        letter-spacing: 0.2px;
+      }
+
+      .sub {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .body {
+        padding: 12px;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 8px;
+      }
+
+      .search {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        font-size: 13px;
+        padding: 9px 10px;
+        outline: none;
+        background: #fff;
+      }
+
+      .search:focus {
+        border-color: #9ec8c8;
+        box-shadow: 0 0 0 3px rgba(13, 110, 110, 0.12);
+      }
+
+      .list {
+        margin-top: 10px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        max-height: 350px;
+        overflow: auto;
+        background: #fff;
+      }
+
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 9px 10px;
+        border-bottom: 1px solid #edf1f7;
+        cursor: pointer;
+      }
+
+      .row:last-child {
+        border-bottom: none;
+      }
+
+      .row:hover {
+        background: #f4faf9;
+      }
+
+      .name {
+        font-size: 13px;
+        line-height: 1.25;
+        word-break: break-word;
+      }
+
+      .empty,
+      .status {
+        padding: 12px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .status.error {
+        color: var(--danger);
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 10px;
+      }
+
+      button {
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        font-size: 13px;
+        padding: 8px 12px;
+        cursor: pointer;
+        background: #fff;
+      }
+
+      button.primary {
+        background: var(--brand);
+        color: #fff;
+        border-color: var(--brand);
+      }
+
+      button.primary:hover {
+        filter: brightness(0.95);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .count {
+        margin-top: 8px;
+        font-size: 11px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="card">
+        <div class="header">
+          <h1>Log Navigator</h1>
+          <div class="sub">Filter and jump to any KIN/KAN log sheet.</div>
+        </div>
+
+        <div class="body">
+          <div class="toolbar">
+            <input id="search" class="search" type="text" placeholder="Type to filter sheets..." />
+          </div>
+
+          <div id="list" class="list"></div>
+          <div id="count" class="count"></div>
+          <div id="status" class="status"></div>
+
+          <div class="actions">
+            <button type="button" id="refreshBtn">Refresh</button>
+            <button type="button" id="openBtn" class="primary" disabled>Open Sheet</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const state = {
+        allNames: [],
+        filteredNames: [],
+        selectedName: "",
+        isOpening: false
+      };
+
+      const listEl = document.getElementById("list");
+      const searchEl = document.getElementById("search");
+      const countEl = document.getElementById("count");
+      const statusEl = document.getElementById("status");
+      const openBtn = document.getElementById("openBtn");
+      const refreshBtn = document.getElementById("refreshBtn");
+
+      function escapeHtml(value) {
+        return value
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/\"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+      }
+
+      function setStatus(message, isError) {
+        statusEl.textContent = message || "";
+        statusEl.className = isError ? "status error" : "status";
+      }
+
+      function setBusy(isBusy) {
+        openBtn.disabled = isBusy || !state.selectedName;
+        refreshBtn.disabled = isBusy;
+      }
+
+      function updateOpenButtonState() {
+        openBtn.disabled = !state.selectedName;
+      }
+
+      function renderList() {
+        if (state.filteredNames.length === 0) {
+          listEl.innerHTML = '<div class="empty">No matching log sheets.</div>';
+          countEl.textContent = "0 sheets";
+          state.selectedName = "";
+          updateOpenButtonState();
+          return;
+        }
+
+        const rowsHtml = state.filteredNames
+          .map((name, index) => {
+            const isChecked = name === state.selectedName ? "checked" : "";
+            const escapedName = escapeHtml(name);
+            return (
+              '<label class="row" data-name="' +
+              String(index) +
+              '">' +
+              '<input type="radio" name="sheet" value="' +
+              escapedName +
+              '" ' +
+              isChecked +
+              ' />' +
+              '<span class="name">' +
+              escapedName +
+              "</span>" +
+              "</label>"
+            );
+          })
+          .join("");
+
+        listEl.innerHTML = rowsHtml;
+        countEl.textContent =
+          state.filteredNames.length +
+          " sheet" +
+          (state.filteredNames.length === 1 ? "" : "s") +
+          " shown";
+      }
+
+      function applyFilter() {
+        const query = searchEl.value.trim().toLowerCase();
+        state.filteredNames = state.allNames.filter((name) => {
+          return name.toLowerCase().includes(query);
+        });
+
+        if (!state.filteredNames.includes(state.selectedName)) {
+          state.selectedName = state.filteredNames[0] || "";
+        }
+
+        renderList();
+        updateOpenButtonState();
+      }
+
+      function loadSheetNames() {
+        setStatus("Loading sheets...", false);
+        setBusy(true);
+
+        google.script.run
+          .withSuccessHandler((names) => {
+            state.allNames = Array.isArray(names) ? names : [];
+            state.filteredNames = state.allNames.slice();
+            state.selectedName = state.filteredNames[0] || "";
+            renderList();
+            updateOpenButtonState();
+            setStatus("", false);
+            setBusy(false);
+          })
+          .withFailureHandler((error) => {
+            setBusy(false);
+            setStatus(error && error.message ? error.message : "Failed to load log sheets.", true);
+          })
+          .getLogSheetNamesForDialog();
+      }
+
+      function openSelectedSheet() {
+        if (!state.selectedName || state.isOpening) return;
+
+        state.isOpening = true;
+
+        setBusy(true);
+        setStatus("Opening " + state.selectedName + "...", false);
+
+        google.script.run
+          .withSuccessHandler((result) => {
+            state.isOpening = false;
+            setBusy(false);
+            if (result && result.success) {
+              setStatus(result.message || "Opened.", false);
+              google.script.host.close();
+              return;
+            }
+
+            setStatus((result && result.message) || "Unable to open sheet.", true);
+          })
+          .withFailureHandler((error) => {
+            state.isOpening = false;
+            setBusy(false);
+            setStatus(error && error.message ? error.message : "Unable to open sheet.", true);
+          })
+          .openLogSheetFromDialog(state.selectedName);
+      }
+
+      listEl.addEventListener("change", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        if (target.name !== "sheet") return;
+
+        state.selectedName = target.value;
+        updateOpenButtonState();
+        openSelectedSheet();
+      });
+
+      listEl.addEventListener("dblclick", (event) => {
+        const row = event.target.closest(".row");
+        if (!row) return;
+
+        const indexValue = Number(row.getAttribute("data-name"));
+        if (!Number.isInteger(indexValue) || indexValue < 0 || indexValue >= state.filteredNames.length) {
+          return;
+        }
+
+        state.selectedName = state.filteredNames[indexValue];
+        openSelectedSheet();
+      });
+
+      searchEl.addEventListener("input", applyFilter);
+      searchEl.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          openSelectedSheet();
+        }
+      });
+
+      openBtn.addEventListener("click", openSelectedSheet);
+      refreshBtn.addEventListener("click", loadSheetNames);
+
+      loadSheetNames();
+    </script>
+  </body>
+</html>

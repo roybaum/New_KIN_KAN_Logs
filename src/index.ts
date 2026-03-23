@@ -58,6 +58,8 @@ function onOpen() {
 
   ui
     .createMenu("KIN KAN Tools")
+    .addItem("Open Log Navigator", "showLogNavigatorDialog")
+    .addSeparator()
     .addItem("Sync Inventory", "syncInventoryFromExternalWorkbook")
     .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
     .addSeparator()
@@ -72,6 +74,36 @@ function onOpen() {
         .addItem("Go To Log By Name", "jumpToLogSheetByNamePrompt")
     )
     .addToUi();
+}
+
+function showLogNavigatorDialog() {
+  const html = HtmlService.createHtmlOutputFromFile("LogNavigatorDialog")
+    .setTitle("Log Navigator")
+    .setWidth(440)
+    .setHeight(560);
+
+  SpreadsheetApp.getUi().showModelessDialog(html, "Log Navigator");
+}
+
+function getLogSheetNamesForDialog(): string[] {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  return getLogSheetsForNavigation_(spreadsheet).map((sheet) => sheet.getName());
+}
+
+function openLogSheetFromDialog(sheetName: string): { success: boolean; message: string } {
+  const targetSheetName = String(sheetName ?? "").trim();
+  if (!targetSheetName) {
+    return { success: false, message: "Choose a log sheet first." };
+  }
+
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const targetSheet = spreadsheet.getSheetByName(targetSheetName);
+  if (!targetSheet || !isNavigableLogSheetName_(targetSheetName)) {
+    return { success: false, message: `Sheet \"${targetSheetName}\" is not a valid log sheet.` };
+  }
+
+  spreadsheet.setActiveSheet(targetSheet);
+  return { success: true, message: `Opened ${targetSheetName}.` };
 }
 
 function openIndexSheet() {
