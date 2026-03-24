@@ -29,7 +29,11 @@ const INDEX_WEEK_DAY_LABELS = [
 ];
 const INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER = "syncIndexVisibilityFromTrigger";
 const INVENTORY_AUTO_SYNC_TRIGGER_HANDLER = "syncInventoryFromTrigger";
-const INVENTORY_AUTO_SYNC_INTERVAL_MINUTES = 5;
+const INVENTORY_AUTO_SYNC_ON_OPEN_TRIGGER_HANDLER = "syncInventoryFromOnOpenTrigger";
+const INVENTORY_AUTO_SYNC_INTERVAL_MINUTES = 6;
+const INVENTORY_AUTO_SYNC_TRIGGER_POLL_MINUTES = 1;
+const INVENTORY_AUTO_SYNC_INTERVAL_MILLISECONDS = INVENTORY_AUTO_SYNC_INTERVAL_MINUTES * 60 * 1000;
+const INVENTORY_AUTO_SYNC_LAST_RUN_PROPERTY_KEY = "inventoryAutoSyncLastRunMs";
 const DAY_NUMBER_TO_DAY_TOKEN = {
     1: "MON",
     2: "TUE",
@@ -66,7 +70,7 @@ function onOpen() {
         .addItem("Sync Inventory", "syncInventoryFromExternalWorkbook")
         .addSubMenu(ui
         .createMenu("Inventory Auto Sync")
-        .addItem("Enable (On Open + Every 5 Min)", "enableInventoryAutoSyncTriggers")
+        .addItem("Enable (On Open + Every 6 Min)", "enableInventoryAutoSyncTriggers")
         .addItem("Disable", "disableInventoryAutoSyncTriggers"))
         .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
         .addItem("Export to ASC", "exportActiveLogSheetToAsc")
@@ -502,13 +506,13 @@ function jumpToRelativeLogSheet_(direction) {
 function enableInventoryAutoSyncTriggers() {
     deleteInventoryAutoSyncTriggers_();
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
-    ScriptApp.newTrigger(INVENTORY_AUTO_SYNC_TRIGGER_HANDLER)
+    ScriptApp.newTrigger(INVENTORY_AUTO_SYNC_ON_OPEN_TRIGGER_HANDLER)
         .forSpreadsheet(spreadsheet)
         .onOpen()
         .create();
     ScriptApp.newTrigger(INVENTORY_AUTO_SYNC_TRIGGER_HANDLER)
         .timeBased()
-        .everyMinutes(INVENTORY_AUTO_SYNC_INTERVAL_MINUTES)
+        .everyMinutes(INVENTORY_AUTO_SYNC_TRIGGER_POLL_MINUTES)
         .create();
     spreadsheet.toast(`Inventory auto sync enabled (on open + every ${INVENTORY_AUTO_SYNC_INTERVAL_MINUTES} minutes).`, "Inventory Auto Sync", 5);
 }
@@ -519,8 +523,22 @@ function disableInventoryAutoSyncTriggers() {
         .toast(`Removed ${removedCount} inventory auto-sync trigger(s).`, "Inventory Auto Sync", 5);
 }
 function syncInventoryFromTrigger() {
+    syncInventoryFromTrigger_(false);
+}
+function syncInventoryFromOnOpenTrigger() {
+    syncInventoryFromTrigger_(true);
+}
+function syncInventoryFromTrigger_(forceSync) {
+    const now = Date.now();
+    const scriptProperties = PropertiesService.getScriptProperties();
+    const lastRunValue = scriptProperties.getProperty(INVENTORY_AUTO_SYNC_LAST_RUN_PROPERTY_KEY);
+    const lastRunMs = lastRunValue ? Number(lastRunValue) : 0;
+    if (!forceSync && Number.isFinite(lastRunMs) && (now - lastRunMs) < INVENTORY_AUTO_SYNC_INTERVAL_MILLISECONDS) {
+        return;
+    }
     try {
         syncInventoryFromExternalWorkbook();
+        scriptProperties.setProperty(INVENTORY_AUTO_SYNC_LAST_RUN_PROPERTY_KEY, String(now));
     }
     catch (error) {
         Logger.log(`Inventory auto sync failed: ${error}`);
@@ -530,8 +548,11 @@ function deleteInventoryAutoSyncTriggers_() {
     const triggers = ScriptApp.getProjectTriggers();
     let removedCount = 0;
     for (const trigger of triggers) {
-        if (trigger.getHandlerFunction() !== INVENTORY_AUTO_SYNC_TRIGGER_HANDLER)
+        const handlerFunction = trigger.getHandlerFunction();
+        if (handlerFunction !== INVENTORY_AUTO_SYNC_TRIGGER_HANDLER
+            && handlerFunction !== INVENTORY_AUTO_SYNC_ON_OPEN_TRIGGER_HANDLER) {
             continue;
+        }
         ScriptApp.deleteTrigger(trigger);
         removedCount++;
     }
