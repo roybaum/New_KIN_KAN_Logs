@@ -12,6 +12,7 @@ const INDEX_SHEET_NAME_MIN_WIDTH_PX = 180;
 const INDEX_SHEET_NAME_MAX_WIDTH_PX = 900;
 const INDEX_SHEET_NAME_CHAR_WIDTH_PX = 9;
 const INDEX_SHEET_NAME_PADDING_PX = 36;
+const INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER = "syncIndexVisibilityFromTrigger";
 const DAY_NUMBER_TO_DAY_TOKEN: Record<number, string> = {
   1: "MON",
   2: "TUE",
@@ -66,6 +67,13 @@ function onOpen() {
     .addItem("Open Index", "openIndexSheet")
     .addItem("Show Index Only", "showIndexOnly")
     .addItem("Refresh Index", "refreshIndexSheet")
+    .addSubMenu(
+      ui
+        .createMenu("Visibility Sync")
+        .addItem("Sync Visibility Now", "syncIndexVisibilityNow")
+        .addItem("Enable 1-Min Visibility Sync", "enableIndexVisibilitySyncTrigger")
+        .addItem("Disable Visibility Sync", "disableIndexVisibilitySyncTrigger")
+    )
     .addSubMenu(
       ui
         .createMenu("Jump")
@@ -139,6 +147,103 @@ function showIndexOnly() {
 
   indexSheet.setActiveSelection("A1");
   spreadsheet.toast(`Index is now the only visible sheet. Hid ${hiddenCount} sheet(s).`, "Index", 4);
+}
+
+function syncIndexVisibilityNow() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const result = syncIndexVisibilityFlagsFromTabs_(spreadsheet);
+  spreadsheet.toast(
+    `Visibility synced. Updated ${result.updatedRowCount} row(s).`,
+    "Index",
+    4
+  );
+}
+
+function syncIndexVisibilityFromTrigger() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  if (!spreadsheet) return;
+  syncIndexVisibilityFlagsFromTabs_(spreadsheet);
+}
+
+function enableIndexVisibilitySyncTrigger() {
+  deleteIndexVisibilitySyncTriggers_();
+
+  ScriptApp.newTrigger(INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER)
+    .timeBased()
+    .everyMinutes(1)
+    .create();
+
+  SpreadsheetApp
+    .getActiveSpreadsheet()
+    .toast("1-minute visibility sync enabled.", "Visibility Sync", 4);
+}
+
+function disableIndexVisibilitySyncTrigger() {
+  const removedCount = deleteIndexVisibilitySyncTriggers_();
+  SpreadsheetApp
+    .getActiveSpreadsheet()
+    .toast(`Removed ${removedCount} visibility sync trigger(s).`, "Visibility Sync", 4);
+}
+
+function deleteIndexVisibilitySyncTriggers_(): number {
+  const triggers = ScriptApp.getProjectTriggers();
+  let removedCount = 0;
+
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() !== INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER) continue;
+    ScriptApp.deleteTrigger(trigger);
+    removedCount++;
+  }
+
+  return removedCount;
+}
+
+function syncIndexVisibilityFlagsFromTabs_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet
+): { updatedRowCount: number } {
+  const indexSheet = spreadsheet.getSheetByName(INDEX_SHEET_NAME);
+  if (!indexSheet) return { updatedRowCount: 0 };
+
+  const lastRow = indexSheet.getLastRow();
+  if (lastRow < 2) return { updatedRowCount: 0 };
+
+  const rowCount = lastRow - 1;
+  const nameValues = indexSheet
+    .getRange(2, INDEX_SHEET_NAME_COLUMN, rowCount, 1)
+    .getDisplayValues();
+  const checkboxValues = indexSheet
+    .getRange(2, INDEX_NAVIGATION_COLUMN, rowCount, 1)
+    .getValues();
+
+  const nextValues: boolean[][] = [];
+  let updatedRowCount = 0;
+
+  for (let i = 0; i < rowCount; i++) {
+    const sheetName = String(nameValues[i][0] || "").trim();
+    let isVisible = false;
+
+    if (sheetName) {
+      const sheet = spreadsheet.getSheetByName(sheetName);
+      if (sheet && isNavigableLogSheetName_(sheetName)) {
+        isVisible = !sheet.isSheetHidden();
+      }
+    }
+
+    const wasVisible = String(checkboxValues[i][0]).toUpperCase() === "TRUE";
+    if (wasVisible !== isVisible) {
+      updatedRowCount++;
+    }
+
+    nextValues.push([isVisible]);
+  }
+
+  if (updatedRowCount > 0) {
+    indexSheet
+      .getRange(2, INDEX_NAVIGATION_COLUMN, rowCount, 1)
+      .setValues(nextValues);
+  }
+
+  return { updatedRowCount };
 }
 
 function refreshIndexSheet() {
