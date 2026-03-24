@@ -1252,7 +1252,180 @@ function normalizeHeaderKey_(value) {
 // ─── ASC Export ──────────────────────────────────────────────────────────────
 const ASC_CART_ID_PREFIX = "DA";
 const ASC_TIME_OFFSET_SECONDS = 120; // +2 minutes
+const ASC_EXPORT_DAY_TOKENS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+const ASC_EXPORT_DAY_LABELS = {
+    MON: "Monday",
+    TUE: "Tuesday",
+    WED: "Wednesday",
+    THU: "Thursday",
+    FRI: "Friday",
+    SAT: "Saturday",
+    SUN: "Sunday"
+};
 function exportActiveLogSheetToAsc() {
+    showAscExportDialog_();
+}
+function showAscExportDialog_() {
+    const html = HtmlService.createHtmlOutputFromFile("AscExportDialog")
+        .setTitle("KRN Log Export")
+        .setWidth(420)
+        .setHeight(680);
+    SpreadsheetApp.getUi().showModalDialog(html, "KRN Log Export Screen");
+}
+function getAscExportDialogState() {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const activeSheetName = spreadsheet.getActiveSheet().getName();
+    const availableDayTokens = getAvailableAscDayTokens_(spreadsheet);
+    const activeSheetDayToken = getLogSheetDayToken_(activeSheetName) || "";
+    const suggestedDayToken = activeSheetDayToken || availableDayTokens[0] || "";
+    return {
+        availableDayTokens,
+        suggestedDayToken,
+        dayLabels: ASC_EXPORT_DAY_LABELS
+    };
+}
+function exportAscForPreset(preset) {
+    const normalizedPreset = String(preset !== null && preset !== void 0 ? preset : "").trim().toUpperCase();
+    switch (normalizedPreset) {
+        case "ALL_DAYS":
+            return exportAscForDayTokens_(ASC_EXPORT_DAY_TOKENS);
+        case "TUE_SAT":
+            return exportAscForDayTokens_(["TUE", "WED", "THU", "FRI", "SAT"]);
+        case "WED_SAT":
+            return exportAscForDayTokens_(["WED", "THU", "FRI", "SAT"]);
+        case "THU_SAT":
+            return exportAscForDayTokens_(["THU", "FRI", "SAT"]);
+        case "FRI_SAT":
+            return exportAscForDayTokens_(["FRI", "SAT"]);
+        default:
+            throw new Error(`Unsupported export preset: ${preset}`);
+    }
+}
+function exportAscForRange(startDayToken, endDayToken) {
+    const normalizedStart = normalizeAscDayToken_(startDayToken);
+    const normalizedEnd = normalizeAscDayToken_(endDayToken);
+    if (!normalizedStart || !normalizedEnd) {
+        throw new Error("Choose a valid start and end day.");
+    }
+    let startIndex = ASC_EXPORT_DAY_TOKENS.indexOf(normalizedStart);
+    let endIndex = ASC_EXPORT_DAY_TOKENS.indexOf(normalizedEnd);
+    if (startIndex > endIndex) {
+        const swap = startIndex;
+        startIndex = endIndex;
+        endIndex = swap;
+    }
+    const dayTokens = ASC_EXPORT_DAY_TOKENS.slice(startIndex, endIndex + 1);
+    return exportAscForDayTokens_(dayTokens);
+}
+function exportAscForSpecificDays(dayTokens) {
+    return exportAscForDayTokens_(dayTokens);
+}
+function exportAscForDayTokens_(dayTokens) {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const normalizedDayTokens = normalizeAscDayTokens_(dayTokens);
+    if (normalizedDayTokens.length === 0) {
+        throw new Error("Choose at least one day to export.");
+    }
+    const files = [];
+    const skippedDayTokens = [];
+    for (const dayToken of normalizedDayTokens) {
+        const daySheets = getAscExportSheetsForDay_(spreadsheet, dayToken);
+        if (daySheets.length === 0) {
+            skippedDayTokens.push(dayToken);
+            continue;
+        }
+        const content = buildAscContentFromSheets_(daySheets);
+        if (!content) {
+            skippedDayTokens.push(dayToken);
+            continue;
+        }
+        const fileName = buildAscFileNameForLogSheet_(spreadsheet, daySheets[0]);
+        const file = saveAscFileToDrive_(fileName, content, spreadsheet);
+        const downloadUrl = "https://drive.google.com/uc?export=download&id=" + file.getId();
+        const lineCount = content.split(/\r\n/).filter((line) => line.trim() !== "").length;
+        files.push({
+            dayToken,
+            dayLabel: ASC_EXPORT_DAY_LABELS[dayToken] || dayToken,
+            fileName,
+            downloadUrl,
+            lineCount,
+            sheetNames: daySheets.map((sheet) => sheet.getName())
+        });
+    }
+    return {
+        generatedCount: files.length,
+        skippedDayTokens,
+        files,
+        message: buildAscExportResultMessage_(files, skippedDayTokens)
+    };
+}
+function buildAscExportResultMessage_(files, skippedDayTokens) {
+    if (files.length === 0) {
+        if (skippedDayTokens.length === 0)
+            return "No ASC files were generated.";
+        return `No ASC files were generated. Missing data for: ${skippedDayTokens.join(", ")}.`;
+    }
+    if (skippedDayTokens.length === 0) {
+        return `Generated ${files.length} ASC file(s).`;
+    }
+    return (`Generated ${files.length} ASC file(s). ` +
+        `Skipped: ${skippedDayTokens.join(", ")}.`);
+}
+function getAvailableAscDayTokens_(spreadsheet) {
+    const dayTokens = new Set();
+    for (const sheet of spreadsheet.getSheets()) {
+        if (!isLogSheetName_(sheet.getName()))
+            continue;
+        const dayToken = getLogSheetDayToken_(sheet.getName());
+        if (!dayToken)
+            continue;
+        dayTokens.add(dayToken);
+    }
+    return ASC_EXPORT_DAY_TOKENS.filter((dayToken) => dayTokens.has(dayToken));
+}
+function normalizeAscDayTokens_(dayTokens) {
+    const deduped = new Set();
+    for (const dayToken of dayTokens) {
+        const normalized = normalizeAscDayToken_(dayToken);
+        if (!normalized)
+            continue;
+        deduped.add(normalized);
+    }
+    return ASC_EXPORT_DAY_TOKENS.filter((dayToken) => deduped.has(dayToken));
+}
+function normalizeAscDayToken_(dayToken) {
+    const normalized = String(dayToken !== null && dayToken !== void 0 ? dayToken : "").trim().toUpperCase();
+    if (ASC_EXPORT_DAY_TOKENS.indexOf(normalized) < 0)
+        return "";
+    return normalized;
+}
+function getLogSheetDayToken_(sheetName) {
+    const dayToken = extractDayAbbrFromSheetName_(sheetName);
+    if (ASC_EXPORT_DAY_TOKENS.indexOf(dayToken) < 0)
+        return "";
+    return dayToken;
+}
+function getAscExportSheetsForDay_(spreadsheet, dayToken) {
+    const normalizedDayToken = normalizeAscDayToken_(dayToken);
+    if (!normalizedDayToken)
+        return [];
+    return spreadsheet
+        .getSheets()
+        .filter((sheet) => isLogSheetName_(sheet.getName()))
+        .filter((sheet) => getLogSheetDayToken_(sheet.getName()) === normalizedDayToken)
+        .sort((left, right) => {
+        const leftMergeKey = getLogSheetAscMergeKey_(left.getName()) || "";
+        const rightMergeKey = getLogSheetAscMergeKey_(right.getName()) || "";
+        const mergeKeyDiff = leftMergeKey.localeCompare(rightMergeKey);
+        if (mergeKeyDiff !== 0)
+            return mergeKeyDiff;
+        const stationOrderDiff = getAscStationOrder_(left.getName()) - getAscStationOrder_(right.getName());
+        if (stationOrderDiff !== 0)
+            return stationOrderDiff;
+        return left.getName().localeCompare(right.getName());
+    });
+}
+function exportLegacySingleAscFromActiveSheet_() {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
     const activeSheet = spreadsheet.getActiveSheet();
     if (!isLogSheetName_(activeSheet.getName())) {
