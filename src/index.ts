@@ -12,6 +12,21 @@ const INDEX_SHEET_NAME_MIN_WIDTH_PX = 180;
 const INDEX_SHEET_NAME_MAX_WIDTH_PX = 900;
 const INDEX_SHEET_NAME_CHAR_WIDTH_PX = 9;
 const INDEX_SHEET_NAME_PADDING_PX = 36;
+const INDEX_WEEK_PANEL_HEADER_ROW = 1;
+const INDEX_WEEK_PANEL_START_ROW = 2;
+const INDEX_WEEK_PANEL_LABEL_COLUMN = 4; // D
+const INDEX_WEEK_PANEL_DATE_COLUMN = 5; // E
+const INDEX_WEEK_PANEL_MONDAY_A1 = "F1";
+const INDEX_DAY_LABELS_COLUMN = 6; // F
+const INDEX_WEEK_DAY_LABELS = [
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+  "Sunday"
+];
 const INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER = "syncIndexVisibilityFromTrigger";
 const DAY_NUMBER_TO_DAY_TOKEN: Record<number, string> = {
   1: "MON",
@@ -252,7 +267,16 @@ function refreshIndexSheet() {
   const logSheets = getLogSheetsForNavigation_(spreadsheet);
   const longestSheetNameLength = getLongestSheetNameLength_(logSheets);
 
-  indexSheet.clear();
+  const listArea = indexSheet.getRange(
+    1,
+    1,
+    indexSheet.getMaxRows(),
+    INDEX_HEADERS.length
+  );
+  listArea.clearContent();
+  listArea.clearFormat();
+  listArea.clearDataValidations();
+
   indexSheet.getRange(1, 1, 1, INDEX_HEADERS.length).setValues([INDEX_HEADERS]);
 
   if (logSheets.length > 0) {
@@ -282,8 +306,132 @@ function refreshIndexSheet() {
     indexSheet.autoResizeColumns(2, INDEX_HEADERS.length - 1);
   }
 
+  ensureIndexWeekDatePanel_(indexSheet);
+
   indexSheet.setActiveSelection("A1");
   spreadsheet.toast(`Index refreshed with ${logSheets.length} log sheet(s).`, "Index", 4);
+}
+
+function ensureIndexWeekDatePanel_(indexSheet: GoogleAppsScript.Spreadsheet.Sheet): void {
+  // Get the Monday date reference (default to most recent Monday if not set)
+  const mondayCell = indexSheet.getRange(INDEX_WEEK_PANEL_MONDAY_A1);
+  let mondayDate = mondayCell.getValue();
+  
+  if (!mondayDate || !(mondayDate instanceof Date)) {
+    mondayDate = getMostRecentMonday_(new Date());
+  }
+
+  // Set Monday cell in F1
+  mondayCell
+    .setValue(mondayDate)
+    .setNote("Enter the Monday date for this workbook week.")
+    .setBackground("#ffffff")
+    .setNumberFormat("ddd mmm d, yyyy");
+
+  // Clear column E completely (including notes from E2)
+  const maxRows = indexSheet.getMaxRows();
+  const columnERange = indexSheet.getRange(INDEX_WEEK_PANEL_START_ROW, INDEX_WEEK_PANEL_DATE_COLUMN, maxRows - 1, 1);
+  columnERange.clearContent();
+  columnERange.clearFormat();
+  columnERange.clearDataValidations();
+  columnERange.clearNote();
+
+  // Read all sheet names from column A (starting from row 2)
+  // Get a large range to capture all potential sheets
+  const sheetNameRange = indexSheet.getRange(
+    INDEX_WEEK_PANEL_START_ROW,
+    INDEX_SHEET_NAME_COLUMN,
+    maxRows - 1,
+    1
+  );
+  const sheetNameValues = sheetNameRange.getValues();
+
+  // Clear column D first to remove old values
+  indexSheet
+    .getRange(
+      INDEX_WEEK_PANEL_START_ROW,
+      INDEX_WEEK_PANEL_LABEL_COLUMN,
+      maxRows - 1,
+      1
+    )
+    .clearContent();
+
+  // Extract day abbreviations and calculate dates
+  const dateValues: (string | Date)[][] = [];
+
+  for (let i = 0; i < sheetNameValues.length; i++) {
+    const sheetName = String(sheetNameValues[i][0]).trim();
+    
+    // Only process non-empty cells with valid sheet name format
+    if (sheetName) {
+      const dayAbbr = extractDayAbbrFromSheetName_(sheetName);
+      
+      // Calculate the date for this day based on offset from Monday
+      if (dayAbbr !== "---" && mondayDate instanceof Date) {
+        const dayOffset = getDayOffsetFromMonday_(dayAbbr);
+        const cellDate = new Date(mondayDate);
+        cellDate.setDate(cellDate.getDate() + dayOffset);
+        dateValues.push([cellDate]);
+      } else {
+        dateValues.push([""]);
+      }
+    } else {
+      dateValues.push([""]);
+    }
+  }
+
+  // Write dates to column D
+  if (dateValues.length > 0) {
+    indexSheet
+      .getRange(
+        INDEX_WEEK_PANEL_START_ROW,
+        INDEX_WEEK_PANEL_LABEL_COLUMN,
+        dateValues.length,
+        1
+      )
+      .setValues(dateValues)
+      .setNumberFormat("ddd mmm d, yyyy")
+      .setBackground("#fff8e1");
+  }
+
+  indexSheet.setColumnWidth(INDEX_WEEK_PANEL_LABEL_COLUMN, 160);
+}
+
+function extractDayAbbrFromSheetName_(sheetName: string): string {
+  // Pattern: "KAN_1_MON" or "KIN_2_TUE" etc.
+  // Extract the three-letter day abbreviation at the end
+  const dayPattern = /_(MON|TUE|WED|THU|FRI|SAT|SUN)$/i;
+  const match = sheetName.match(dayPattern);
+
+  if (match) {
+    return match[1].toUpperCase();
+  }
+
+  // Fallback if format doesn't match
+  return "---";
+}
+
+function getDayOffsetFromMonday_(dayAbbr: string): number {
+  // Returns the number of days from Monday (Monday = 0, Tuesday = 1, etc.)
+  const dayMap: Record<string, number> = {
+    MON: 0,
+    TUE: 1,
+    WED: 2,
+    THU: 3,
+    FRI: 4,
+    SAT: 5,
+    SUN: 6
+  };
+  return dayMap[dayAbbr.toUpperCase()] ?? 0;
+}
+
+function getMostRecentMonday_(today: Date): Date {
+  const monday = new Date(today);
+  monday.setHours(0, 0, 0, 0);
+  const day = monday.getDay();
+  const dayOffset = (day + 6) % 7;
+  monday.setDate(monday.getDate() - dayOffset);
+  return monday;
 }
 
 function getLongestSheetNameLength_(
@@ -622,6 +770,12 @@ function handleIndexGoEdit_(
   editedRange: GoogleAppsScript.Spreadsheet.Range,
   editedValue: string | undefined
 ): void {
+  // Check if F1 (Monday date cell) was edited
+  if (editedRange.getRow() === 1 && editedRange.getColumn() === 6) {
+    updateIndexDatesFromMondayCell_(indexSheet);
+    return;
+  }
+
   // Only respond to edits that touch the navigation column
   if (!rangeIncludesColumn_(editedRange, INDEX_NAVIGATION_COLUMN)) return;
 
@@ -673,6 +827,73 @@ function handleIndexGoEdit_(
     const safeSheet = getOrCreateIndexSheet_(spreadsheet);
     activateSheet_(spreadsheet, safeSheet);
     safeSheet.setActiveSelection("A1");
+  }
+}
+
+function updateIndexDatesFromMondayCell_(indexSheet: GoogleAppsScript.Spreadsheet.Sheet): void {
+  // Get the Monday date from F1
+  const mondayCell = indexSheet.getRange(INDEX_WEEK_PANEL_MONDAY_A1);
+  const enteredValue = mondayCell.getValue();
+
+  // Only update if a valid date was entered
+  if (!enteredValue || !(enteredValue instanceof Date)) {
+    return;
+  }
+
+  // Normalize to the Monday of whatever week the entered date falls in
+  const mondayDate = getMostRecentMonday_(enteredValue);
+
+  // Write back the normalized Monday date if it differs from what was entered
+  if (mondayDate.getTime() !== enteredValue.getTime()) {
+    mondayCell.setValue(mondayDate);
+  }
+
+  // Read all sheet names from column A
+  const maxRows = indexSheet.getMaxRows();
+  const sheetNameRange = indexSheet.getRange(
+    INDEX_WEEK_PANEL_START_ROW,
+    INDEX_SHEET_NAME_COLUMN,
+    maxRows - 1,
+    1
+  );
+  const sheetNameValues = sheetNameRange.getValues();
+
+  // Extract day abbreviations and calculate dates
+  const dateValues: (string | Date)[][] = [];
+
+  for (let i = 0; i < sheetNameValues.length; i++) {
+    const sheetName = String(sheetNameValues[i][0]).trim();
+
+    // Only process non-empty cells with valid sheet name format
+    if (sheetName) {
+      const dayAbbr = extractDayAbbrFromSheetName_(sheetName);
+
+      // Calculate the date for this day based on offset from Monday
+      if (dayAbbr !== "---") {
+        const dayOffset = getDayOffsetFromMonday_(dayAbbr);
+        const cellDate = new Date(mondayDate);
+        cellDate.setDate(cellDate.getDate() + dayOffset);
+        dateValues.push([cellDate]);
+      } else {
+        dateValues.push([""]);
+      }
+    } else {
+      dateValues.push([""]);
+    }
+  }
+
+  // Write dates to column D
+  if (dateValues.length > 0) {
+    indexSheet
+      .getRange(
+        INDEX_WEEK_PANEL_START_ROW,
+        INDEX_WEEK_PANEL_LABEL_COLUMN,
+        dateValues.length,
+        1
+      )
+      .setValues(dateValues)
+      .setNumberFormat("ddd mmm d, yyyy")
+      .setBackground("#fff8e1");
   }
 }
 
