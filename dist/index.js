@@ -1252,6 +1252,7 @@ function normalizeHeaderKey_(value) {
 // ─── ASC Export ──────────────────────────────────────────────────────────────
 const ASC_CART_ID_PREFIX = "DA";
 const ASC_TIME_OFFSET_SECONDS = 120; // +2 minutes
+const ASC_EXPORT_TARGET_FOLDER_ID = "1r6IPJ9_N9nQuVvdGi3Yfhzkfc0MmxMHE";
 const ASC_EXPORT_DAY_TOKENS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 const ASC_EXPORT_DAY_LABELS = {
     MON: "Monday",
@@ -1340,7 +1341,7 @@ function exportAscForDayTokens_(dayTokens) {
             continue;
         }
         const fileName = buildAscFileNameForLogSheet_(spreadsheet, daySheets[0]);
-        const file = saveAscFileToDrive_(fileName, content, spreadsheet);
+        const file = saveAscFileToDrive_(fileName, content);
         const downloadUrl = "https://drive.google.com/uc?export=download&id=" + file.getId();
         const lineCount = content.split(/\r\n/).filter((line) => line.trim() !== "").length;
         files.push({
@@ -1435,7 +1436,7 @@ function exportLegacySingleAscFromActiveSheet_() {
     const logSheetsForExport = getLogSheetsForAscExport_(spreadsheet, activeSheet);
     const content = buildAscContentFromSheets_(logSheetsForExport);
     const fileName = buildAscFileNameForLogSheet_(spreadsheet, activeSheet);
-    const file = saveAscFileToDrive_(fileName, content, spreadsheet);
+    const file = saveAscFileToDrive_(fileName, content);
     const downloadUrl = "https://drive.google.com/uc?export=download&id=" + file.getId();
     const safeFileName = escapeHtmlAttr_(fileName);
     const safeUrl = escapeHtmlAttr_(downloadUrl);
@@ -1443,8 +1444,7 @@ function exportLegacySingleAscFromActiveSheet_() {
         "a{color:#1a73e8;}p{margin:8px 0;}</style>" +
         "<p>&#10003; <strong>" + safeFileName + "</strong> is ready.</p>" +
         "<p><a href=\"" + safeUrl + "\" target=\"_blank\">Click here to download</a></p>" +
-        "<p style=\"color:#666;font-size:12px;\">The file was saved to your Google Drive " +
-        "in the same folder as this spreadsheet.</p>" +
+        "<p style=\"color:#666;font-size:12px;\">The file was saved to your ASC export folder in Google Drive.</p>" +
         "<br><input type=\"button\" value=\"Close\" onclick=\"google.script.host.close();\">" +
         "")
         .setWidth(400)
@@ -1586,10 +1586,14 @@ function getAscTimeSortSeconds_(value, offsetSeconds) {
         return Number.POSITIVE_INFINITY;
     return parsedSeconds;
 }
-function saveAscFileToDrive_(fileName, content, spreadsheet) {
-    const spreadsheetFile = DriveApp.getFileById(spreadsheet.getId());
-    const parents = spreadsheetFile.getParents();
-    const folder = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+function saveAscFileToDrive_(fileName, content) {
+    let folder;
+    try {
+        folder = DriveApp.getFolderById(ASC_EXPORT_TARGET_FOLDER_ID);
+    }
+    catch (error) {
+        throw new Error(`ASC export folder could not be opened. Check folder access for ID ${ASC_EXPORT_TARGET_FOLDER_ID}. (${error})`);
+    }
     // Trash any existing file with the same name before creating a fresh one
     const existingFiles = folder.getFilesByName(fileName);
     while (existingFiles.hasNext()) {
