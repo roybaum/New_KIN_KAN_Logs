@@ -28,6 +28,8 @@ const INDEX_WEEK_DAY_LABELS = [
     "Sunday"
 ];
 const INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER = "syncIndexVisibilityFromTrigger";
+const INVENTORY_AUTO_SYNC_TRIGGER_HANDLER = "syncInventoryFromTrigger";
+const INVENTORY_AUTO_SYNC_INTERVAL_MINUTES = 5;
 const DAY_NUMBER_TO_DAY_TOKEN = {
     1: "MON",
     2: "TUE",
@@ -46,6 +48,7 @@ const INVENTORY_IMPORT_COLUMN_MAPPING = [
     { sourceHeader: "EndDate", destinationIndex: 6 }
 ];
 const TITLE_COLUMN = 4; // D
+const CATEGORY_COLUMN = 6; // F
 const CART_ID_COLUMN = 7; // G
 const LENGTH_COLUMN = 8; // H
 const PICKER_COLUMN = 9; // I
@@ -61,7 +64,12 @@ function onOpen() {
         .addItem("Open Log Navigator", "showLogNavigatorDialog")
         .addSeparator()
         .addItem("Sync Inventory", "syncInventoryFromExternalWorkbook")
+        .addSubMenu(ui
+        .createMenu("Inventory Auto Sync")
+        .addItem("Enable (On Open + Every 5 Min)", "enableInventoryAutoSyncTriggers")
+        .addItem("Disable", "disableInventoryAutoSyncTriggers"))
         .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
+        .addItem("Export to ASC", "exportActiveLogSheetToAsc")
         .addSeparator()
         .addItem("Open Index", "openIndexSheet")
         .addItem("Show Index Only", "showIndexOnly")
@@ -490,6 +498,44 @@ function jumpToRelativeLogSheet_(direction) {
     }
     const targetIndex = (currentIndex + direction + logSheets.length) % logSheets.length;
     activateSheet_(spreadsheet, logSheets[targetIndex]);
+}
+function enableInventoryAutoSyncTriggers() {
+    deleteInventoryAutoSyncTriggers_();
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    ScriptApp.newTrigger(INVENTORY_AUTO_SYNC_TRIGGER_HANDLER)
+        .forSpreadsheet(spreadsheet)
+        .onOpen()
+        .create();
+    ScriptApp.newTrigger(INVENTORY_AUTO_SYNC_TRIGGER_HANDLER)
+        .timeBased()
+        .everyMinutes(INVENTORY_AUTO_SYNC_INTERVAL_MINUTES)
+        .create();
+    spreadsheet.toast(`Inventory auto sync enabled (on open + every ${INVENTORY_AUTO_SYNC_INTERVAL_MINUTES} minutes).`, "Inventory Auto Sync", 5);
+}
+function disableInventoryAutoSyncTriggers() {
+    const removedCount = deleteInventoryAutoSyncTriggers_();
+    SpreadsheetApp
+        .getActiveSpreadsheet()
+        .toast(`Removed ${removedCount} inventory auto-sync trigger(s).`, "Inventory Auto Sync", 5);
+}
+function syncInventoryFromTrigger() {
+    try {
+        syncInventoryFromExternalWorkbook();
+    }
+    catch (error) {
+        Logger.log(`Inventory auto sync failed: ${error}`);
+    }
+}
+function deleteInventoryAutoSyncTriggers_() {
+    const triggers = ScriptApp.getProjectTriggers();
+    let removedCount = 0;
+    for (const trigger of triggers) {
+        if (trigger.getHandlerFunction() !== INVENTORY_AUTO_SYNC_TRIGGER_HANDLER)
+            continue;
+        ScriptApp.deleteTrigger(trigger);
+        removedCount++;
+    }
+    return removedCount;
 }
 function syncInventoryFromExternalWorkbook() {
     const destinationSpreadsheet = SpreadsheetApp.getActiveSpreadsheet();
@@ -1181,4 +1227,121 @@ function normalizeHeaderKey_(value) {
         .trim()
         .toLowerCase()
         .replace(/[\s_]+/g, "");
+}
+// ─── ASC Export ──────────────────────────────────────────────────────────────
+const ASC_CART_ID_PREFIX = "DA";
+const ASC_TIME_OFFSET_SECONDS = 120; // +2 minutes
+function exportActiveLogSheetToAsc() {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const activeSheet = spreadsheet.getActiveSheet();
+    if (!isLogSheetName_(activeSheet.getName())) {
+        spreadsheet.toast("ASC export works on KIN/KAN log sheets only.", "Export to ASC", 5);
+        return;
+    }
+    const content = buildAscContent_(activeSheet);
+    const fileName = activeSheet.getName() + ".asc";
+    const file = saveAscFileToDrive_(fileName, content, spreadsheet);
+    const downloadUrl = "https://drive.google.com/uc?export=download&id=" + file.getId();
+    const safeFileName = escapeHtmlAttr_(fileName);
+    const safeUrl = escapeHtmlAttr_(downloadUrl);
+    const html = HtmlService.createHtmlOutput("<style>body{font-family:Arial,sans-serif;padding:16px;margin:0;}" +
+        "a{color:#1a73e8;}p{margin:8px 0;}</style>" +
+        "<p>&#10003; <strong>" + safeFileName + "</strong> is ready.</p>" +
+        "<p><a href=\"" + safeUrl + "\" target=\"_blank\">Click here to download</a></p>" +
+        "<p style=\"color:#666;font-size:12px;\">The file was saved to your Google Drive " +
+        "in the same folder as this spreadsheet.</p>" +
+        "<br><input type=\"button\" value=\"Close\" onclick=\"google.script.host.close();\">" +
+        "")
+        .setWidth(400)
+        .setHeight(170);
+    SpreadsheetApp.getUi().showModalDialog(html, "Export to ASC");
+}
+function buildAscContent_(logSheet) {
+    var _a, _b, _c;
+    const lastRow = logSheet.getLastRow();
+    if (lastRow < 2)
+        return "";
+    const rowCount = lastRow - 1;
+    // Read all needed columns in one API call (cols 1-8)
+    const allData = logSheet.getRange(2, 1, rowCount, LENGTH_COLUMN).getValues();
+    const lines = [];
+    for (let i = 0; i < rowCount; i++) {
+        const cartId = String((_a = allData[i][CART_ID_COLUMN - 1]) !== null && _a !== void 0 ? _a : "").trim();
+        if (!cartId)
+            continue;
+        const time = formatTimeForAsc_(allData[i][DEFAULT_TIME_COLUMN - 1], ASC_TIME_OFFSET_SECONDS);
+        const category = String((_b = allData[i][CATEGORY_COLUMN - 1]) !== null && _b !== void 0 ? _b : "").trim();
+        const title = String((_c = allData[i][TITLE_COLUMN - 1]) !== null && _c !== void 0 ? _c : "").trim();
+        const length = formatLengthForAsc_(allData[i][LENGTH_COLUMN - 1]);
+        const prefixedCartId = ASC_CART_ID_PREFIX + cartId;
+        // Format: TIME,,CATEGORY,CART_ID,TITLE,,LENGTH,0
+        lines.push(time + ",," + category + "," + prefixedCartId + "," + title + ",," + length + ",0");
+    }
+    return lines.join("\r\n");
+}
+function saveAscFileToDrive_(fileName, content, spreadsheet) {
+    const spreadsheetFile = DriveApp.getFileById(spreadsheet.getId());
+    const parents = spreadsheetFile.getParents();
+    const folder = parents.hasNext() ? parents.next() : DriveApp.getRootFolder();
+    // Trash any existing file with the same name before creating a fresh one
+    const existingFiles = folder.getFilesByName(fileName);
+    while (existingFiles.hasNext()) {
+        existingFiles.next().setTrashed(true);
+    }
+    return folder.createFile(fileName, content, MimeType.PLAIN_TEXT);
+}
+function formatTimeForAsc_(value, offsetSeconds = 0) {
+    let totalSeconds = null;
+    if (value instanceof Date) {
+        totalSeconds = value.getHours() * 3600 + value.getMinutes() * 60 + value.getSeconds();
+    }
+    else if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value < 1) {
+        totalSeconds = Math.round(value * 86400);
+    }
+    else {
+        const text = String(value !== null && value !== void 0 ? value : "").trim();
+        totalSeconds = extractTimeOfDaySeconds_(text);
+        if (totalSeconds === null) {
+            // Unknown format — return as-is without offset
+            if (/^\d{1,2}:\d{2}:\d{2}$/.test(text))
+                return text.replace(/^(\d):/, "0$1:");
+            if (/^\d{1,2}:\d{2}$/.test(text))
+                return text.replace(/^(\d):/, "0$1:") + ":00";
+            return text;
+        }
+    }
+    const shifted = ((totalSeconds + offsetSeconds) % 86400 + 86400) % 86400;
+    const h = Math.floor(shifted / 3600);
+    const m = Math.floor((shifted % 3600) / 60);
+    const s = shifted % 60;
+    return (String(h).padStart(2, "0") + ":" +
+        String(m).padStart(2, "0") + ":" +
+        String(s).padStart(2, "0"));
+}
+function formatLengthForAsc_(value) {
+    const totalSeconds = parseLengthSeconds_(value);
+    if (totalSeconds === null)
+        return String(value !== null && value !== void 0 ? value : "").trim();
+    const normalized = normalizeAscLengthSeconds_(Math.round(totalSeconds));
+    const h = Math.floor(normalized / 3600);
+    const m = Math.floor((normalized % 3600) / 60);
+    const s = normalized % 60;
+    if (h > 0) {
+        return (String(h).padStart(2, "0") + ":" +
+            String(m).padStart(2, "0") + ":" +
+            String(s).padStart(2, "0"));
+    }
+    return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+function normalizeAscLengthSeconds_(seconds) {
+    // Snap to the nearest of 30s or 60s
+    return Math.abs(seconds - 30) <= Math.abs(seconds - 60) ? 30 : 60;
+}
+function escapeHtmlAttr_(value) {
+    return value
+        .replace(/&/g, "&amp;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
 }
