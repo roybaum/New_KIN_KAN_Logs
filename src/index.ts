@@ -1619,8 +1619,9 @@ function exportActiveLogSheetToAsc() {
     return;
   }
 
-  const content = buildAscContent_(activeSheet);
-  const fileName = activeSheet.getName() + ".asc";
+  const logSheetsForExport = getLogSheetsForAscExport_(spreadsheet, activeSheet);
+  const content = buildAscContentFromSheets_(logSheetsForExport);
+  const fileName = buildAscFileNameForLogSheet_(spreadsheet, activeSheet);
   const file = saveAscFileToDrive_(fileName, content, spreadsheet);
   const downloadUrl = "https://drive.google.com/uc?export=download&id=" + file.getId();
 
@@ -1642,30 +1643,164 @@ function exportActiveLogSheetToAsc() {
   SpreadsheetApp.getUi().showModalDialog(html, "Export to ASC");
 }
 
-function buildAscContent_(logSheet: GoogleAppsScript.Spreadsheet.Sheet): string {
-  const lastRow = logSheet.getLastRow();
-  if (lastRow < 2) return "";
+function getLogSheetsForAscExport_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  activeSheet: GoogleAppsScript.Spreadsheet.Sheet
+): GoogleAppsScript.Spreadsheet.Sheet[] {
+  const mergeKey = getLogSheetAscMergeKey_(activeSheet.getName());
+  if (!mergeKey) return [activeSheet];
+
+  const matchingSheets = spreadsheet
+    .getSheets()
+    .filter((sheet) => isLogSheetName_(sheet.getName()))
+    .filter((sheet) => getLogSheetAscMergeKey_(sheet.getName()) === mergeKey)
+    .sort((left, right) => {
+      const stationOrderDiff = getAscStationOrder_(left.getName()) - getAscStationOrder_(right.getName());
+      if (stationOrderDiff !== 0) return stationOrderDiff;
+      return left.getName().localeCompare(right.getName());
+    });
+
+  if (matchingSheets.length > 0) return matchingSheets;
+  return [activeSheet];
+}
+
+function getLogSheetAscMergeKey_(sheetName: string): string | null {
+  const normalizedName = sheetName.trim().toUpperCase();
+  const match = normalizedName.match(/^(KIN|KAN)_(.+)$/);
+  if (!match) return null;
+  return match[2];
+}
+
+function getAscStationOrder_(sheetName: string): number {
+  const normalizedName = sheetName.trim().toUpperCase();
+  if (normalizedName.startsWith("KIN_")) return 0;
+  if (normalizedName.startsWith("KAN_")) return 1;
+  return 2;
+}
+
+function buildAscFileNameForLogSheet_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  logSheet: GoogleAppsScript.Spreadsheet.Sheet
+): string {
+  const scriptTimeZone = Session.getScriptTimeZone();
+  const logSheetName = logSheet.getName();
+  const indexDate = getIndexDateForSheetName_(spreadsheet, logSheetName);
+
+  if (indexDate instanceof Date && !Number.isNaN(indexDate.getTime())) {
+    return Utilities.formatDate(indexDate, scriptTimeZone, "yyMMdd") + ".asc";
+  }
+
+  const fallbackDate = getDateForSheetFromMondayCell_(spreadsheet, logSheetName);
+  if (fallbackDate instanceof Date && !Number.isNaN(fallbackDate.getTime())) {
+    return Utilities.formatDate(fallbackDate, scriptTimeZone, "yyMMdd") + ".asc";
+  }
+
+  return logSheetName + ".asc";
+}
+
+function getIndexDateForSheetName_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  sheetName: string
+): Date | null {
+  const indexSheet = spreadsheet.getSheetByName(INDEX_SHEET_NAME);
+  if (!indexSheet) return null;
+
+  const lastRow = indexSheet.getLastRow();
+  if (lastRow < 2) return null;
 
   const rowCount = lastRow - 1;
-  // Read all needed columns in one API call (cols 1-8)
-  const allData = logSheet.getRange(2, 1, rowCount, LENGTH_COLUMN).getValues();
+  const nameValues = indexSheet
+    .getRange(2, INDEX_SHEET_NAME_COLUMN, rowCount, 1)
+    .getDisplayValues();
+  const dateValues = indexSheet
+    .getRange(2, INDEX_WEEK_PANEL_LABEL_COLUMN, rowCount, 1)
+    .getValues();
+
+  for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
+    const candidateName = String(nameValues[rowOffset][0] ?? "").trim();
+    if (candidateName !== sheetName) continue;
+
+    const candidateDate = dateValues[rowOffset][0];
+    if (candidateDate instanceof Date && !Number.isNaN(candidateDate.getTime())) {
+      return candidateDate;
+    }
+
+    return null;
+  }
+
+  return null;
+}
+
+function getDateForSheetFromMondayCell_(
+  spreadsheet: GoogleAppsScript.Spreadsheet.Spreadsheet,
+  sheetName: string
+): Date | null {
+  const indexSheet = spreadsheet.getSheetByName(INDEX_SHEET_NAME);
+  if (!indexSheet) return null;
+
+  const mondayValue = indexSheet.getRange(INDEX_WEEK_PANEL_MONDAY_A1).getValue();
+  if (!(mondayValue instanceof Date) || Number.isNaN(mondayValue.getTime())) {
+    return null;
+  }
+
+  const dayAbbr = extractDayAbbrFromSheetName_(sheetName);
+  if (dayAbbr === "---") return null;
+
+  const dayOffset = getDayOffsetFromMonday_(dayAbbr);
+  const sheetDate = new Date(mondayValue);
+  sheetDate.setDate(sheetDate.getDate() + dayOffset);
+  return sheetDate;
+}
+
+function buildAscContentFromSheets_(logSheets: GoogleAppsScript.Spreadsheet.Sheet[]): string {
+  const ascRows: Array<{ sortSeconds: number; sequence: number; line: string }> = [];
+  let sequence = 0;
+
+  for (const logSheet of logSheets) {
+    const lastRow = logSheet.getLastRow();
+    if (lastRow < 2) continue;
+
+    const rowCount = lastRow - 1;
+    // Read all needed columns in one API call (cols 1-8)
+    const allData = logSheet.getRange(2, 1, rowCount, LENGTH_COLUMN).getValues();
+
+    for (let i = 0; i < rowCount; i++) {
+      const cartId = String(allData[i][CART_ID_COLUMN - 1] ?? "").trim();
+      if (!cartId) continue;
+
+      const rawTimeValue = allData[i][DEFAULT_TIME_COLUMN - 1];
+      const time = formatTimeForAsc_(rawTimeValue, ASC_TIME_OFFSET_SECONDS);
+      const category = String(allData[i][CATEGORY_COLUMN - 1] ?? "").trim();
+      const title = String(allData[i][TITLE_COLUMN - 1] ?? "").trim();
+      const length = formatLengthForAsc_(allData[i][LENGTH_COLUMN - 1]);
+      const prefixedCartId = ASC_CART_ID_PREFIX + cartId;
+
+      // Format: TIME,,CATEGORY,CART_ID,TITLE,,LENGTH,0
+      const line = time + ",," + category + "," + prefixedCartId + "," + title + ",," + length + ",0";
+      const sortSeconds = getAscTimeSortSeconds_(rawTimeValue, ASC_TIME_OFFSET_SECONDS);
+      ascRows.push({ sortSeconds, sequence, line });
+      sequence++;
+    }
+  }
+
+  ascRows.sort((left, right) => {
+    if (left.sortSeconds !== right.sortSeconds) return left.sortSeconds - right.sortSeconds;
+    return left.sequence - right.sequence;
+  });
+
   const lines: string[] = [];
-
-  for (let i = 0; i < rowCount; i++) {
-    const cartId = String(allData[i][CART_ID_COLUMN - 1] ?? "").trim();
-    if (!cartId) continue;
-
-    const time = formatTimeForAsc_(allData[i][DEFAULT_TIME_COLUMN - 1], ASC_TIME_OFFSET_SECONDS);
-    const category = String(allData[i][CATEGORY_COLUMN - 1] ?? "").trim();
-    const title = String(allData[i][TITLE_COLUMN - 1] ?? "").trim();
-    const length = formatLengthForAsc_(allData[i][LENGTH_COLUMN - 1]);
-    const prefixedCartId = ASC_CART_ID_PREFIX + cartId;
-
-    // Format: TIME,,CATEGORY,CART_ID,TITLE,,LENGTH,0
-    lines.push(time + ",," + category + "," + prefixedCartId + "," + title + ",," + length + ",0");
+  for (const row of ascRows) {
+    lines.push(row.line);
   }
 
   return lines.join("\r\n");
+}
+
+function getAscTimeSortSeconds_(value: unknown, offsetSeconds: number): number {
+  const formattedTime = formatTimeForAsc_(value, offsetSeconds);
+  const parsedSeconds = extractTimeOfDaySeconds_(formattedTime);
+  if (parsedSeconds === null) return Number.POSITIVE_INFINITY;
+  return parsedSeconds;
 }
 
 function saveAscFileToDrive_(
