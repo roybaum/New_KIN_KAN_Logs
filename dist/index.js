@@ -393,38 +393,54 @@ function onEdit(e) {
     }
 }
 function handleIndexGoEdit_(indexSheet, editedRange, editedValue) {
-    if (!isSingleCellEdit_(editedRange))
+    // Only respond to edits that touch the navigation column
+    if (!rangeIncludesColumn_(editedRange, INDEX_NAVIGATION_COLUMN))
         return;
-    if (editedRange.getRow() < 2)
+    const lastRow = indexSheet.getLastRow();
+    if (lastRow < 2)
         return;
-    if (editedRange.getColumn() !== INDEX_NAVIGATION_COLUMN)
-        return;
-    const targetSheetName = String(indexSheet.getRange(editedRange.getRow(), INDEX_SHEET_NAME_COLUMN).getDisplayValue()).trim();
-    if (!targetSheetName)
-        return;
+    // Sheets only fires onEdit for the anchor cell when spacebar-toggling a
+    // multi-cell checkbox selection. Work around this by always reading ALL
+    // checkbox values from the sheet (which Sheets has already updated) and
+    // syncing ALL sheet visibility to match. This handles single clicks,
+    // rapid clicks, and bulk spacebar toggles correctly.
     const spreadsheet = indexSheet.getParent();
-    const targetSheet = spreadsheet.getSheetByName(targetSheetName);
-    if (!targetSheet || !isNavigableLogSheetName_(targetSheetName)) {
-        return;
-    }
-    const normalizedValue = String(editedValue || "").toUpperCase();
-    if (normalizedValue === "TRUE") {
-        if (targetSheet.isSheetHidden()) {
-            targetSheet.showSheet();
-        }
-        return;
-    }
-    if (normalizedValue !== "FALSE")
-        return;
-    if (targetSheet.isSheetHidden())
-        return;
+    const rowCount = lastRow - 1;
+    const nameValues = indexSheet
+        .getRange(2, INDEX_SHEET_NAME_COLUMN, rowCount, 1)
+        .getDisplayValues();
+    const checkboxValues = indexSheet
+        .getRange(2, INDEX_NAVIGATION_COLUMN, rowCount, 1)
+        .getValues();
+    let needsIndexFallback = false;
     const activeSheet = spreadsheet.getActiveSheet();
-    if (activeSheet.getSheetId() === targetSheet.getSheetId()) {
+    for (let i = 0; i < rowCount; i++) {
+        const targetSheetName = String(nameValues[i][0] || "").trim();
+        if (!targetSheetName)
+            continue;
+        const targetSheet = spreadsheet.getSheetByName(targetSheetName);
+        if (!targetSheet || !isNavigableLogSheetName_(targetSheetName))
+            continue;
+        const isChecked = String(checkboxValues[i][0]).toUpperCase() === "TRUE";
+        if (isChecked) {
+            if (targetSheet.isSheetHidden()) {
+                targetSheet.showSheet();
+            }
+        }
+        else {
+            if (!targetSheet.isSheetHidden()) {
+                if (activeSheet.getSheetId() === targetSheet.getSheetId()) {
+                    needsIndexFallback = true;
+                }
+                targetSheet.hideSheet();
+            }
+        }
+    }
+    if (needsIndexFallback) {
         const safeSheet = getOrCreateIndexSheet_(spreadsheet);
         activateSheet_(spreadsheet, safeSheet);
         safeSheet.setActiveSelection("A1");
     }
-    targetSheet.hideSheet();
 }
 function findInventoryMatches_(inventorySheet, searchValue) {
     const activeInventory = getActiveInventoryMatches_(inventorySheet);
