@@ -49,7 +49,7 @@ if (!(Test-Path -Path $LogDirectory)) {
 
 if (!$PSBoundParameters.ContainsKey('Categories') -or $Categories.Count -eq 0) {
     if ([string]::IsNullOrWhiteSpace($env:WO_CATEGORIES)) {
-        $Categories = @('COM')
+        $Categories = @('COM', 'FL5')
     } else {
         $Categories = $env:WO_CATEGORIES.Split(',') |
             ForEach-Object { $_.Trim().ToUpperInvariant() } |
