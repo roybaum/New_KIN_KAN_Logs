@@ -7,6 +7,9 @@
   "scripts": {
     "build": "tsc && copy appsscript.json dist\\ && copy src\\*.html dist\\",
     "push": "npm run build && clasp push",
-    "pull": "clasp pull"
+    "pull": "clasp pull",
+    "build:webhook": "tsc --project webhook/tsconfig.json && copy webhook\\appsscript.json webhook\\dist\\",
+    "push:webhook": "npm run build:webhook && clasp push --project webhook",
+    "pull:webhook": "clasp pull --project webhook"
   }
 }
