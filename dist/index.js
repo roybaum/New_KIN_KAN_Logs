@@ -821,7 +821,7 @@ function getActiveInventoryMatches_(inventorySheet) {
             title: String(item[0]),
             isci: item[1],
             category: item[2],
-            cartId: String(item[3]),
+            cartId: normalizeCartId_(item[3]),
             length: item[4],
             startDate: item[5],
             endDate: item[6]
@@ -833,7 +833,7 @@ function getActiveInventoryMatches_(inventorySheet) {
     return activeInventory;
 }
 function getInventoryMatchesByCategory_(inventorySheet, categoryKey) {
-    var _a, _b, _c;
+    var _a, _b;
     const normalizedCategory = String(categoryKey !== null && categoryKey !== void 0 ? categoryKey : "").trim().toUpperCase();
     if (!normalizedCategory)
         return [];
@@ -847,12 +847,12 @@ function getInventoryMatchesByCategory_(inventorySheet, categoryKey) {
             title: String((_a = item[0]) !== null && _a !== void 0 ? _a : "").trim(),
             isci: item[1],
             category: item[2],
-            cartId: String((_b = item[3]) !== null && _b !== void 0 ? _b : "").trim(),
+            cartId: normalizeCartId_(item[3]),
             length: item[4],
             startDate: item[5],
             endDate: item[6]
         };
-        const matchCategory = String((_c = match.category) !== null && _c !== void 0 ? _c : "").trim().toUpperCase();
+        const matchCategory = String((_b = match.category) !== null && _b !== void 0 ? _b : "").trim().toUpperCase();
         if (matchCategory !== normalizedCategory)
             continue;
         if (!match.title || !match.cartId)
@@ -1015,11 +1015,12 @@ function isActiveToday_(today, startDate, endDate) {
 }
 function applyMatchToEntryRow_(entrySheet, row, match) {
     const normalizedLengthSeconds = normalizeInventoryLengthToBreakStandard_(match.length);
+    const normalizedCartId = normalizeCartId_(match.cartId);
     entrySheet.getRange(row, TITLE_COLUMN, 1, 5).setValues([[
             match.title,
             match.isci,
             match.category,
-            match.cartId,
+            normalizedCartId,
             normalizedLengthSeconds
         ]]);
     markCartIdAsValid_(entrySheet, row);
@@ -1108,10 +1109,10 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
             markCartIdAsValid_(entrySheet, targetRow);
             continue;
         }
-        const searchValue = String(cartIdValue).trim().toLowerCase();
+        const searchValue = normalizeCartId_(cartIdValue).toLowerCase();
         const matches = findMatchesInInventory_(activeInventory, searchValue);
         if (matches.length === 0) {
-            invalidCarts.push({ row: targetRow, cartId: String(cartIdValue).trim() });
+            invalidCarts.push({ row: targetRow, cartId: normalizeCartId_(cartIdValue) });
             markCartIdAsInvalid_(entrySheet, targetRow);
             continue;
         }
@@ -1411,9 +1412,31 @@ function mapSourceInventoryRow_(sourceRow, sourceHeaderIndexByKey) {
         if (sourceIndex === undefined)
             continue;
         const sourceValue = sourceRow[sourceIndex];
+        if (mapping.destinationIndex === 3) {
+            mappedRow[mapping.destinationIndex] = normalizeCartId_(sourceValue);
+            continue;
+        }
         mappedRow[mapping.destinationIndex] = sourceValue !== null && sourceValue !== void 0 ? sourceValue : "";
     }
     return mappedRow;
+}
+function normalizeCartId_(value) {
+    if (value === null || value === undefined)
+        return "";
+    if (typeof value === "number" && Number.isFinite(value)) {
+        const integerValue = Math.trunc(value);
+        if (integerValue >= 0 && integerValue < 10000 && integerValue === value) {
+            return String(integerValue).padStart(4, "0");
+        }
+        return String(value).trim();
+    }
+    const textValue = String(value).trim();
+    if (!textValue)
+        return "";
+    if (/^\d+$/.test(textValue) && textValue.length < 4) {
+        return textValue.padStart(4, "0");
+    }
+    return textValue;
 }
 function writeInventoryRows_(destinationSheet, rows) {
     const existingRowCount = Math.max(destinationSheet.getLastRow() - 1, 0);
@@ -1740,7 +1763,7 @@ function getDateForSheetFromMondayCell_(spreadsheet, sheetName) {
     return sheetDate;
 }
 function buildAscContentFromSheets_(logSheets) {
-    var _a, _b, _c;
+    var _a, _b;
     const ascRows = [];
     let sequence = 0;
     for (const logSheet of logSheets) {
@@ -1751,13 +1774,13 @@ function buildAscContentFromSheets_(logSheets) {
         // Read all needed columns in one API call (cols 1-8)
         const allData = logSheet.getRange(2, 1, rowCount, LENGTH_COLUMN).getValues();
         for (let i = 0; i < rowCount; i++) {
-            const cartId = String((_a = allData[i][CART_ID_COLUMN - 1]) !== null && _a !== void 0 ? _a : "").trim();
+            const cartId = normalizeCartId_(allData[i][CART_ID_COLUMN - 1]);
             if (!cartId)
                 continue;
             const rawTimeValue = allData[i][DEFAULT_TIME_COLUMN - 1];
             const time = formatTimeForAsc_(rawTimeValue, ASC_TIME_OFFSET_SECONDS);
-            const category = String((_b = allData[i][CATEGORY_COLUMN - 1]) !== null && _b !== void 0 ? _b : "").trim();
-            const title = String((_c = allData[i][TITLE_COLUMN - 1]) !== null && _c !== void 0 ? _c : "").trim();
+            const category = String((_a = allData[i][CATEGORY_COLUMN - 1]) !== null && _a !== void 0 ? _a : "").trim();
+            const title = String((_b = allData[i][TITLE_COLUMN - 1]) !== null && _b !== void 0 ? _b : "").trim();
             const length = formatLengthForAsc_(allData[i][LENGTH_COLUMN - 1]);
             const prefixedCartId = ASC_CART_ID_PREFIX + cartId;
             // Format: TIME,,CATEGORY,CART_ID,TITLE,,LENGTH,0

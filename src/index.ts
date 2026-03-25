@@ -1068,7 +1068,7 @@ function getActiveInventoryMatches_(inventorySheet: GoogleAppsScript.Spreadsheet
       title: String(item[0]),
       isci: item[1],
       category: item[2],
-      cartId: String(item[3]),
+      cartId: normalizeCartId_(item[3]),
       length: item[4],
       startDate: item[5],
       endDate: item[6]
@@ -1100,7 +1100,7 @@ function getInventoryMatchesByCategory_(
       title: String(item[0] ?? "").trim(),
       isci: item[1] as CellValue,
       category: item[2] as CellValue,
-      cartId: String(item[3] ?? "").trim(),
+      cartId: normalizeCartId_(item[3]),
       length: item[4] as CellValue,
       startDate: item[5] as CellValue,
       endDate: item[6] as CellValue
@@ -1312,12 +1312,13 @@ function applyMatchToEntryRow_(
   match: InventoryMatch
 ) {
   const normalizedLengthSeconds = normalizeInventoryLengthToBreakStandard_(match.length);
+  const normalizedCartId = normalizeCartId_(match.cartId);
 
   entrySheet.getRange(row, TITLE_COLUMN, 1, 5).setValues([[
     match.title,
     match.isci,
     match.category,
-    match.cartId,
+    normalizedCartId,
     normalizedLengthSeconds
   ]]);
 
@@ -1436,10 +1437,10 @@ function processCartIdRangeEdit_(
       continue;
     }
 
-    const searchValue = String(cartIdValue).trim().toLowerCase();
+    const searchValue = normalizeCartId_(cartIdValue).toLowerCase();
     const matches = findMatchesInInventory_(activeInventory, searchValue);
     if (matches.length === 0) {
-      invalidCarts.push({ row: targetRow, cartId: String(cartIdValue).trim() });
+      invalidCarts.push({ row: targetRow, cartId: normalizeCartId_(cartIdValue) });
       markCartIdAsInvalid_(entrySheet, targetRow);
       continue;
     }
@@ -1811,10 +1812,35 @@ function mapSourceInventoryRow_(
     const sourceIndex = sourceHeaderIndexByKey[normalizeHeaderKey_(mapping.sourceHeader)];
     if (sourceIndex === undefined) continue;
     const sourceValue = sourceRow[sourceIndex] as CellValue;
+    if (mapping.destinationIndex === 3) {
+      mappedRow[mapping.destinationIndex] = normalizeCartId_(sourceValue);
+      continue;
+    }
     mappedRow[mapping.destinationIndex] = sourceValue ?? "";
   }
 
   return mappedRow;
+}
+
+function normalizeCartId_(value: unknown): string {
+  if (value === null || value === undefined) return "";
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const integerValue = Math.trunc(value);
+    if (integerValue >= 0 && integerValue < 10000 && integerValue === value) {
+      return String(integerValue).padStart(4, "0");
+    }
+    return String(value).trim();
+  }
+
+  const textValue = String(value).trim();
+  if (!textValue) return "";
+
+  if (/^\d+$/.test(textValue) && textValue.length < 4) {
+    return textValue.padStart(4, "0");
+  }
+
+  return textValue;
 }
 
 function writeInventoryRows_(
@@ -2247,7 +2273,7 @@ function buildAscContentFromSheets_(logSheets: GoogleAppsScript.Spreadsheet.Shee
     const allData = logSheet.getRange(2, 1, rowCount, LENGTH_COLUMN).getValues();
 
     for (let i = 0; i < rowCount; i++) {
-      const cartId = String(allData[i][CART_ID_COLUMN - 1] ?? "").trim();
+      const cartId = normalizeCartId_(allData[i][CART_ID_COLUMN - 1]);
       if (!cartId) continue;
 
       const rawTimeValue = allData[i][DEFAULT_TIME_COLUMN - 1];
