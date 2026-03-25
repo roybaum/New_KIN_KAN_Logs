@@ -1071,15 +1071,26 @@ function applyMatchToEntryRow_(
   row: number,
   match: InventoryMatch
 ) {
+  const normalizedLengthSeconds = normalizeInventoryLengthToBreakStandard_(match.length);
+
   entrySheet.getRange(row, TITLE_COLUMN, 1, 5).setValues([[
     match.title,
     match.isci,
     match.category,
     match.cartId,
-    match.length
+    normalizedLengthSeconds
   ]]);
 
   markCartIdAsValid_(entrySheet, row);
+}
+
+function normalizeInventoryLengthToBreakStandard_(value: CellValue): number {
+  const parsedSeconds = parseLengthSeconds_(value);
+  if (parsedSeconds === null || !Number.isFinite(parsedSeconds)) {
+    return 60;
+  }
+
+  return Math.abs(parsedSeconds - 30) <= Math.abs(parsedSeconds - 60) ? 30 : 60;
 }
 
 function setPickerForMatches_(
