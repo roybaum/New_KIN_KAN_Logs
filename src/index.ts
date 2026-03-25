@@ -60,9 +60,11 @@ const LENGTH_COLUMN = 8; // H
 const PICKER_COLUMN = 9; // I
 const DEFAULT_TIME_COLUMN = 2; // B
 const REQUIRED_BREAK_SECONDS = 60;
+const HALF_BREAK_SECONDS = 30;
 const BREAK_SECONDS_TOLERANCE = 1;
 const VALID_CART_ID_FONT_COLOR = "#000000";
 const INVALID_CART_ID_FONT_COLOR = "#d93025";
+const FL5_CATEGORY_KEY = "FL5";
 
 type CellValue = string | number | boolean | Date | null;
 
@@ -90,6 +92,7 @@ function onOpen() {
         .addItem("Enable (On Open + Every 6 Min)", "enableInventoryAutoSyncTriggers")
         .addItem("Disable", "disableInventoryAutoSyncTriggers")
     )
+    .addItem("Fill FL5 Break Gaps", "fillFl5BreakGapsFromInventory")
     .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
     .addItem("Export to ASC", "exportActiveLogSheetToAsc")
     .addSeparator()
@@ -790,6 +793,63 @@ function checkActiveLogSheetBreakDurations() {
   validateLogSheetBreakDurations_(activeSheet);
 }
 
+function fillFl5BreakGapsFromInventory() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const inventorySheet = spreadsheet.getSheetByName(INVENTORY_SHEET_NAME);
+  if (!inventorySheet) {
+    spreadsheet.toast("Inventory sheet not found.", "Fill FL5 Breaks", 5);
+    return;
+  }
+
+  const fl5Inventory = getInventoryMatchesByCategory_(inventorySheet, FL5_CATEGORY_KEY);
+  if (fl5Inventory.length === 0) {
+    spreadsheet.toast("No FL5 inventory rows were found.", "Fill FL5 Breaks", 5);
+    return;
+  }
+
+  const logSheets = getLogSheetsForNavigation_(spreadsheet);
+  if (logSheets.length === 0) {
+    spreadsheet.toast("No log sheets were found.", "Fill FL5 Breaks", 5);
+    return;
+  }
+
+  let totalFilledRows = 0;
+  let processedSheets = 0;
+  let skippedForMissingDate = 0;
+  let skippedForNoValidInventory = 0;
+
+  for (const logSheet of logSheets) {
+    const sheetDate = getIndexDateForSheetName_(spreadsheet, logSheet.getName())
+      || getDateForSheetFromMondayCell_(spreadsheet, logSheet.getName());
+    if (!(sheetDate instanceof Date) || Number.isNaN(sheetDate.getTime())) {
+      skippedForMissingDate++;
+      continue;
+    }
+
+    const monday = getMostRecentMonday_(sheetDate);
+    const sunday = new Date(monday);
+    sunday.setDate(sunday.getDate() + 6);
+
+    const validFl5ForSheet = fl5Inventory.filter((match) =>
+      isInventoryMatchValidForSheetWeek_(match, sheetDate, monday, sunday)
+    );
+    if (validFl5ForSheet.length === 0) {
+      skippedForNoValidInventory++;
+      continue;
+    }
+
+    totalFilledRows += fillFl5BreakGapsOnSheet_(logSheet, validFl5ForSheet);
+    processedSheets++;
+  }
+
+  const message =
+    `Filled ${totalFilledRows} break row(s) across ${processedSheets} sheet(s). ` +
+    `Skipped ${skippedForMissingDate} sheet(s) with no index date and ` +
+    `${skippedForNoValidInventory} with no valid FL5 carts for that week.`;
+
+  spreadsheet.toast(message, "Fill FL5 Breaks", 8);
+}
+
 function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
   if (!e) return;
 
@@ -1020,6 +1080,186 @@ function getActiveInventoryMatches_(inventorySheet: GoogleAppsScript.Spreadsheet
   }
 
   return activeInventory;
+}
+
+function getInventoryMatchesByCategory_(
+  inventorySheet: GoogleAppsScript.Spreadsheet.Sheet,
+  categoryKey: string
+): InventoryMatch[] {
+  const normalizedCategory = String(categoryKey ?? "").trim().toUpperCase();
+  if (!normalizedCategory) return [];
+
+  const lastRow = inventorySheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const data = inventorySheet.getRange(2, 1, lastRow - 1, 7).getValues();
+  const matches: InventoryMatch[] = [];
+
+  for (const item of data) {
+    const match: InventoryMatch = {
+      title: String(item[0] ?? "").trim(),
+      isci: item[1] as CellValue,
+      category: item[2] as CellValue,
+      cartId: String(item[3] ?? "").trim(),
+      length: item[4] as CellValue,
+      startDate: item[5] as CellValue,
+      endDate: item[6] as CellValue
+    };
+
+    const matchCategory = String(match.category ?? "").trim().toUpperCase();
+    if (matchCategory !== normalizedCategory) continue;
+    if (!match.title || !match.cartId) continue;
+    matches.push(match);
+  }
+
+  return matches;
+}
+
+function isInventoryMatchValidForSheetWeek_(
+  match: InventoryMatch,
+  sheetDate: Date,
+  monday: Date,
+  sunday: Date
+): boolean {
+  const normalizedSheetDate = new Date(sheetDate);
+  normalizedSheetDate.setHours(0, 0, 0, 0);
+
+  const normalizedMonday = new Date(monday);
+  normalizedMonday.setHours(0, 0, 0, 0);
+
+  const normalizedSunday = new Date(sunday);
+  normalizedSunday.setHours(0, 0, 0, 0);
+
+  const start = toNormalizedDateOrNull_(match.startDate);
+  const end = toNormalizedDateOrNull_(match.endDate);
+
+  if (start && normalizedSheetDate < start) return false;
+  if (end && normalizedSheetDate > end) return false;
+
+  if (start && start > normalizedSunday) return false;
+  if (end && end < normalizedMonday) return false;
+
+  return true;
+}
+
+function toNormalizedDateOrNull_(value: CellValue): Date | null {
+  if (
+    value === null ||
+    value === "" ||
+    !(value instanceof Date || typeof value === "string" || typeof value === "number")
+  ) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  parsed.setHours(0, 0, 0, 0);
+  return parsed;
+}
+
+function fillFl5BreakGapsOnSheet_(
+  logSheet: GoogleAppsScript.Spreadsheet.Sheet,
+  inventoryPool: InventoryMatch[]
+): number {
+  const lastRow = logSheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const rowCount = lastRow - 1;
+  const timeColumn = findTimeColumnIndex_(logSheet);
+  const allData = logSheet.getRange(2, 1, rowCount, PICKER_COLUMN).getValues();
+
+  type GroupRow = { rowNumber: number; isEmptyBreakRow: boolean };
+  type BreakGroup = { rows: GroupRow[]; totalSeconds: number; hasAnyData: boolean };
+
+  const groups: Record<string, BreakGroup> = {};
+
+  for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
+    const row = allData[rowOffset];
+    const timeValue = row[timeColumn - 1];
+    const timeKey = normalizeTimeSlotKey_(timeValue);
+    if (!timeKey) continue;
+
+    const titleValue = row[TITLE_COLUMN - 1] as CellValue;
+    const categoryValue = row[CATEGORY_COLUMN - 1] as CellValue;
+    const cartValue = row[CART_ID_COLUMN - 1] as CellValue;
+    const lengthValue = row[LENGTH_COLUMN - 1];
+
+    const group = groups[timeKey] ?? { rows: [], totalSeconds: 0, hasAnyData: false };
+
+    const parsedLength = parseLengthSeconds_(lengthValue);
+    if (parsedLength !== null) {
+      group.totalSeconds += parsedLength;
+    }
+
+    const hasAnyData =
+      !isCellValueBlank_(titleValue) ||
+      !isCellValueBlank_(categoryValue) ||
+      !isCellValueBlank_(cartValue) ||
+      !isCellValueBlank_(lengthValue as CellValue);
+
+    const isEmptyBreakRow =
+      isCellValueBlank_(titleValue) &&
+      isCellValueBlank_(categoryValue) &&
+      isCellValueBlank_(cartValue) &&
+      isCellValueBlank_(lengthValue as CellValue);
+
+    group.hasAnyData = group.hasAnyData || hasAnyData;
+    group.rows.push({ rowNumber: rowOffset + 2, isEmptyBreakRow });
+    groups[timeKey] = group;
+  }
+
+  const randomizedPool = shuffleInventoryMatches_(inventoryPool);
+  let inventoryCursor = 0;
+  let filledRows = 0;
+
+  for (const group of Object.values(groups)) {
+    let neededSeconds = 0;
+    if (!group.hasAnyData) {
+      neededSeconds = REQUIRED_BREAK_SECONDS;
+    } else if (Math.abs(group.totalSeconds - HALF_BREAK_SECONDS) <= BREAK_SECONDS_TOLERANCE) {
+      neededSeconds = HALF_BREAK_SECONDS;
+    }
+
+    if (neededSeconds === 0) continue;
+
+    const targetRow = group.rows.find((row) => row.isEmptyBreakRow);
+    if (!targetRow) continue;
+
+    if (inventoryCursor >= randomizedPool.length) {
+      const reshuffled = shuffleInventoryMatches_(randomizedPool);
+      randomizedPool.splice(0, randomizedPool.length, ...reshuffled);
+      inventoryCursor = 0;
+    }
+
+    const picked = randomizedPool[inventoryCursor++];
+    logSheet.getRange(targetRow.rowNumber, TITLE_COLUMN, 1, 5).setValues([[
+      picked.title,
+      picked.isci,
+      picked.category,
+      picked.cartId,
+      neededSeconds
+    ]]);
+    clearPicker_(logSheet, targetRow.rowNumber);
+    markCartIdAsValid_(logSheet, targetRow.rowNumber);
+    filledRows++;
+  }
+
+  if (filledRows > 0) {
+    validateLogSheetBreakDurations_(logSheet);
+  }
+
+  return filledRows;
+}
+
+function shuffleInventoryMatches_(inventoryMatches: InventoryMatch[]): InventoryMatch[] {
+  const copy = inventoryMatches.slice();
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const swap = copy[i];
+    copy[i] = copy[j];
+    copy[j] = swap;
+  }
+  return copy;
 }
 
 function findMatchesInInventory_(inventory: InventoryMatch[], searchValue: string): InventoryMatch[] {
