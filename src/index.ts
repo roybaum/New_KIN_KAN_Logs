@@ -1836,6 +1836,13 @@ function normalizeCartId_(value: unknown): string {
   const textValue = String(value).trim();
   if (!textValue) return "";
 
+  const numericLikeMatch = textValue.match(/^(\d+)(?:\.0+)?$/);
+  if (numericLikeMatch) {
+    const digits = numericLikeMatch[1];
+    if (digits.length < 4) return digits.padStart(4, "0");
+    return digits;
+  }
+
   if (/^\d+$/.test(textValue) && textValue.length < 4) {
     return textValue.padStart(4, "0");
   }
@@ -1848,6 +1855,14 @@ function writeInventoryRows_(
   rows: CellValue[][]
 ): void {
   const existingRowCount = Math.max(destinationSheet.getLastRow() - 1, 0);
+  const cartRowCount = Math.max(existingRowCount, rows.length);
+
+  if (cartRowCount > 0) {
+    destinationSheet
+      .getRange(2, 4, cartRowCount, 1)
+      .setNumberFormat("@");
+  }
+
   if (existingRowCount > 0) {
     destinationSheet
       .getRange(2, 1, existingRowCount, INVENTORY_IMPORT_DESTINATION_COLUMN_COUNT)
