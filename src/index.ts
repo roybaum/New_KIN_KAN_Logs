@@ -93,6 +93,7 @@ function onOpen() {
         .addItem("Disable", "disableInventoryAutoSyncTriggers")
     )
     .addItem("Fill FL5 Break Gaps", "fillFl5BreakGapsFromInventory")
+    .addItem("Remove FL5 Carts From Logs", "removeFl5CartsFromLogs")
     .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
     .addItem("Export to ASC", "exportActiveLogSheetToAsc")
     .addSeparator()
@@ -850,6 +851,59 @@ function fillFl5BreakGapsFromInventory() {
   spreadsheet.toast(message, "Fill FL5 Breaks", 8);
 }
 
+function removeFl5CartsFromLogs() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const logSheets = getLogSheetsForNavigation_(spreadsheet);
+
+  if (logSheets.length === 0) {
+    spreadsheet.toast("No log sheets were found.", "Remove FL5 Carts", 5);
+    return;
+  }
+
+  let totalRemovedRows = 0;
+  let touchedSheets = 0;
+
+  for (const logSheet of logSheets) {
+    const removedRows = removeFl5RowsOnLogSheet_(logSheet);
+    if (removedRows > 0) {
+      touchedSheets++;
+      totalRemovedRows += removedRows;
+    }
+  }
+
+  spreadsheet.toast(
+    `Removed ${totalRemovedRows} FL5 row(s) across ${touchedSheets} sheet(s).`,
+    "Remove FL5 Carts",
+    8
+  );
+}
+
+function removeFl5RowsOnLogSheet_(logSheet: GoogleAppsScript.Spreadsheet.Sheet): number {
+  const lastRow = logSheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const rowCount = lastRow - 1;
+  const categoryValues = logSheet.getRange(2, CATEGORY_COLUMN, rowCount, 1).getValues();
+
+  const rowsToClear: number[] = [];
+
+  for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
+    const category = String(categoryValues[rowOffset][0] ?? "").trim().toUpperCase();
+    if (category !== FL5_CATEGORY_KEY) continue;
+    rowsToClear.push(rowOffset + 2);
+  }
+
+  if (rowsToClear.length === 0) return 0;
+
+  for (const rowNumber of rowsToClear) {
+    clearEntryRow_(logSheet, rowNumber);
+    clearPicker_(logSheet, rowNumber);
+  }
+
+  validateLogSheetBreakDurations_(logSheet);
+  return rowsToClear.length;
+}
+
 function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
   if (!e) return;
 
@@ -1166,6 +1220,7 @@ function fillFl5BreakGapsOnSheet_(
 
   const rowCount = lastRow - 1;
   const timeColumn = findTimeColumnIndex_(logSheet);
+  const timeValues = logSheet.getRange(2, timeColumn, rowCount, 1).getValues();
   const allData = logSheet.getRange(2, 1, rowCount, PICKER_COLUMN).getValues();
 
   type GroupRow = { rowNumber: number; isEmptyBreakRow: boolean };
@@ -1175,7 +1230,7 @@ function fillFl5BreakGapsOnSheet_(
 
   for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
     const row = allData[rowOffset];
-    const timeValue = row[timeColumn - 1];
+    const timeValue = timeValues[rowOffset][0];
     const timeKey = normalizeTimeSlotKey_(timeValue);
     if (!timeKey) continue;
 
