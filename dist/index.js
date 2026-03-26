@@ -30,8 +30,10 @@ const INDEX_WEEK_DAY_LABELS = [
 const INDEX_VISIBILITY_SYNC_TRIGGER_HANDLER = "syncIndexVisibilityFromTrigger";
 const INVENTORY_AUTO_SYNC_TRIGGER_HANDLER = "syncInventoryFromTrigger";
 const INVENTORY_AUTO_SYNC_ON_OPEN_TRIGGER_HANDLER = "syncInventoryFromOnOpenTrigger";
+const CART_DATE_VALIDITY_TRIGGER_HANDLER = "checkCartDateValidityFromTrigger";
 const INVENTORY_AUTO_SYNC_INTERVAL_MINUTES = 6;
 const INVENTORY_AUTO_SYNC_TRIGGER_POLL_MINUTES = 1;
+const CART_DATE_VALIDITY_CHECK_INTERVAL_MINUTES = 6;
 const INVENTORY_AUTO_SYNC_INTERVAL_MILLISECONDS = INVENTORY_AUTO_SYNC_INTERVAL_MINUTES * 60 * 1000;
 const INVENTORY_AUTO_SYNC_LAST_RUN_PROPERTY_KEY = "inventoryAutoSyncLastRunMs";
 const DAY_NUMBER_TO_DAY_TOKEN = {
@@ -74,6 +76,11 @@ function onOpen() {
         .createMenu("Inventory Auto Sync")
         .addItem("Enable (On Open + Every 6 Min)", "enableInventoryAutoSyncTriggers")
         .addItem("Disable", "disableInventoryAutoSyncTriggers"))
+        .addSubMenu(ui
+        .createMenu("Cart Date Validity")
+        .addItem("Check Now", "checkCartDateValidityNow")
+        .addItem("Enable Auto Check (Every 6 Min)", "enableCartDateValidityAutoCheck")
+        .addItem("Disable Auto Check", "disableCartDateValidityAutoCheck"))
         .addItem("Fill FL5 Break Gaps", "fillFl5BreakGapsFromInventory")
         .addItem("Remove FL5 Carts From Logs", "removeFl5CartsFromLogs")
         .addItem("Check Break Lengths", "checkActiveLogSheetBreakDurations")
@@ -589,7 +596,98 @@ function syncInventoryFromExternalWorkbook() {
         .map((sourceRow) => mapSourceInventoryRow_(sourceRow, sourceHeaderIndexByKey))
         .filter((row) => !isInventoryRowBlank_(row));
     writeInventoryRows_(destinationSheet, mappedRows);
+    // Keep log-sheet cart validity in sync with updated inventory dates.
+    checkCartDateValidityAcrossLogs_(destinationSpreadsheet, false);
     Logger.log(`Inventory sync complete. Imported ${mappedRows.length} row(s).`);
+}
+function checkCartDateValidityNow() {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    checkCartDateValidityAcrossLogs_(spreadsheet, true);
+}
+function checkCartDateValidityFromTrigger() {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    if (!spreadsheet)
+        return;
+    checkCartDateValidityAcrossLogs_(spreadsheet, false);
+}
+function enableCartDateValidityAutoCheck() {
+    deleteCartDateValidityTriggers_();
+    ScriptApp.newTrigger(CART_DATE_VALIDITY_TRIGGER_HANDLER)
+        .timeBased()
+        .everyMinutes(CART_DATE_VALIDITY_CHECK_INTERVAL_MINUTES)
+        .create();
+    SpreadsheetApp
+        .getActiveSpreadsheet()
+        .toast(`Cart date auto-check enabled (every ${CART_DATE_VALIDITY_CHECK_INTERVAL_MINUTES} minutes).`, "Cart Date Validity", 5);
+}
+function disableCartDateValidityAutoCheck() {
+    const removedCount = deleteCartDateValidityTriggers_();
+    SpreadsheetApp
+        .getActiveSpreadsheet()
+        .toast(`Removed ${removedCount} cart date validity trigger(s).`, "Cart Date Validity", 5);
+}
+function deleteCartDateValidityTriggers_() {
+    const triggers = ScriptApp.getProjectTriggers();
+    let removedCount = 0;
+    for (const trigger of triggers) {
+        if (trigger.getHandlerFunction() !== CART_DATE_VALIDITY_TRIGGER_HANDLER)
+            continue;
+        ScriptApp.deleteTrigger(trigger);
+        removedCount++;
+    }
+    return removedCount;
+}
+function checkCartDateValidityAcrossLogs_(spreadsheet, showToast) {
+    const inventorySheet = spreadsheet.getSheetByName(INVENTORY_SHEET_NAME);
+    if (!inventorySheet) {
+        if (showToast) {
+            spreadsheet.toast("Inventory sheet not found.", "Cart Date Validity", 5);
+        }
+        return { invalidCount: 0, checkedCount: 0 };
+    }
+    const logSheets = getLogSheetsForNavigation_(spreadsheet);
+    let invalidCount = 0;
+    let checkedCount = 0;
+    for (const logSheet of logSheets) {
+        const result = checkCartDateValidityOnSheet_(spreadsheet, logSheet, inventorySheet);
+        invalidCount += result.invalidCount;
+        checkedCount += result.checkedCount;
+    }
+    if (showToast) {
+        const title = invalidCount > 0 ? "Invalid Cart IDs" : "Cart Date Validity";
+        const message = invalidCount > 0
+            ? `${invalidCount} invalid cart(s) out of ${checkedCount} checked.`
+            : `All ${checkedCount} checked cart(s) are date-valid for their log dates.`;
+        spreadsheet.toast(message, title, 6);
+    }
+    return { invalidCount, checkedCount };
+}
+function checkCartDateValidityOnSheet_(spreadsheet, logSheet, inventorySheet) {
+    const lastRow = logSheet.getLastRow();
+    if (lastRow < 2)
+        return { invalidCount: 0, checkedCount: 0 };
+    const rowCount = lastRow - 1;
+    const cartValues = logSheet.getRange(2, CART_ID_COLUMN, rowCount, 1).getValues();
+    const nextEntryFontColors = Array.from({ length: rowCount }, () => Array.from({ length: 5 }, () => VALID_CART_ID_FONT_COLOR));
+    const validInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, logSheet);
+    const validCartIds = new Set(validInventory.map((match) => match.cartId.toLowerCase()));
+    let invalidCount = 0;
+    let checkedCount = 0;
+    for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
+        const rawCartId = cartValues[rowOffset][0];
+        const normalizedCartId = normalizeCartId_(rawCartId);
+        if (!normalizedCartId)
+            continue;
+        checkedCount++;
+        if (validCartIds.has(normalizedCartId.toLowerCase()))
+            continue;
+        for (let columnOffset = 0; columnOffset < 5; columnOffset++) {
+            nextEntryFontColors[rowOffset][columnOffset] = INVALID_CART_ID_FONT_COLOR;
+        }
+        invalidCount++;
+    }
+    logSheet.getRange(2, TITLE_COLUMN, rowCount, 5).setFontColors(nextEntryFontColors);
+    return { invalidCount, checkedCount };
 }
 function checkActiveLogSheetBreakDurations() {
     const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
@@ -728,12 +826,15 @@ function onEdit(e) {
         const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
         if (!inventorySheet)
             return;
-        const activeInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, sheet);
-        const matches = findMatchesInInventory_(activeInventory, searchValue);
+        const allInventory = getAllInventoryMatches_(inventorySheet);
+        const validInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, sheet);
+        const validCartIds = new Set(validInventory.map((match) => match.cartId.toLowerCase()));
+        const matches = findMatchesInInventory_(allInventory, searchValue);
         if (matches.length === 0)
             return;
         if (matches.length === 1) {
             applyMatchToEntryRow_(sheet, row, matches[0]);
+            applyCartDateValidityStyle_(sheet, row, validCartIds);
             return;
         }
         setPickerForMatches_(sheet, row, matches);
@@ -860,6 +961,29 @@ function getInventoryMatchesForLogSheetDate_(inventorySheet, logSheet) {
         || getDateForSheetFromMondayCell_(spreadsheet, logSheet.getName())
         || new Date();
     return getActiveInventoryMatchesForDate_(inventorySheet, sheetDate);
+}
+function getAllInventoryMatches_(inventorySheet) {
+    var _a;
+    const lastRow = inventorySheet.getLastRow();
+    if (lastRow < 2)
+        return [];
+    const data = inventorySheet.getRange(2, 1, lastRow - 1, 7).getValues();
+    const allInventory = [];
+    for (const item of data) {
+        const match = {
+            title: String((_a = item[0]) !== null && _a !== void 0 ? _a : "").trim(),
+            isci: item[1],
+            category: item[2],
+            cartId: normalizeCartId_(item[3]),
+            length: item[4],
+            startDate: item[5],
+            endDate: item[6]
+        };
+        if (!match.title || !match.cartId)
+            continue;
+        allInventory.push(match);
+    }
+    return allInventory;
 }
 function getActiveInventoryMatchesForDate_(inventorySheet, targetDate) {
     const lastRow = inventorySheet.getLastRow();
@@ -1077,7 +1201,7 @@ function applyMatchToEntryRow_(entrySheet, row, match) {
             normalizedCartId,
             normalizedLengthSeconds
         ]]);
-    markCartIdAsValid_(entrySheet, row);
+    setEntryRowFontColor_(entrySheet, row, VALID_CART_ID_FONT_COLOR);
 }
 function normalizeInventoryLengthToBreakStandard_(value) {
     const parsedSeconds = parseLengthSeconds_(value);
@@ -1108,11 +1232,14 @@ function applyPickerSelection_(entrySheet, row, pickerValue) {
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
     if (!inventorySheet)
         return;
-    const activeInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet);
-    const selectedMatch = activeInventory.find((match) => match.cartId.trim().toLowerCase() === cartId.toLowerCase());
+    const allInventory = getAllInventoryMatches_(inventorySheet);
+    const validInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet);
+    const validCartIds = new Set(validInventory.map((match) => match.cartId.toLowerCase()));
+    const selectedMatch = allInventory.find((match) => match.cartId.trim().toLowerCase() === cartId.toLowerCase());
     if (!selectedMatch)
         return;
     applyMatchToEntryRow_(entrySheet, row, selectedMatch);
+    applyCartDateValidityStyle_(entrySheet, row, validCartIds);
     clearPicker_(entrySheet, row);
 }
 function parsePickerCartId_(value) {
@@ -1139,7 +1266,7 @@ function clearEntryRow_(entrySheet, row) {
     rowRange.clearContent();
     rowRange.clearDataValidations();
     rowRange.clearNote();
-    markCartIdAsValid_(entrySheet, row);
+    setEntryRowFontColor_(entrySheet, row, VALID_CART_ID_FONT_COLOR);
 }
 function processCartIdRangeEdit_(entrySheet, editedRange) {
     if (!rangeIncludesColumn_(editedRange, CART_ID_COLUMN))
@@ -1147,9 +1274,11 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
     const cartIdOffset = CART_ID_COLUMN - editedRange.getColumn();
     const values = editedRange.getValues();
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
-    const activeInventory = inventorySheet
+    const allInventory = inventorySheet ? getAllInventoryMatches_(inventorySheet) : [];
+    const validInventory = inventorySheet
         ? getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet)
         : [];
+    const validCartIds = new Set(validInventory.map((match) => match.cartId.toLowerCase()));
     const invalidCarts = [];
     for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {
         const targetRow = editedRange.getRow() + rowOffset;
@@ -1166,7 +1295,7 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
             continue;
         }
         const searchValue = normalizeCartId_(cartIdValue).toLowerCase();
-        const matches = findMatchesInInventory_(activeInventory, searchValue);
+        const matches = findMatchesInInventory_(allInventory, searchValue);
         if (matches.length === 0) {
             invalidCarts.push({ row: targetRow, cartId: normalizeCartId_(cartIdValue) });
             markCartIdAsInvalid_(entrySheet, targetRow);
@@ -1176,10 +1305,12 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
         const exactMatch = matches.find((match) => match.cartId.toLowerCase() === searchValue);
         if (exactMatch) {
             applyMatchToEntryRow_(entrySheet, targetRow, exactMatch);
+            applyCartDateValidityStyle_(entrySheet, targetRow, validCartIds);
             continue;
         }
         if (matches.length === 1) {
             applyMatchToEntryRow_(entrySheet, targetRow, matches[0]);
+            applyCartDateValidityStyle_(entrySheet, targetRow, validCartIds);
             continue;
         }
         setPickerForMatches_(entrySheet, targetRow, matches);
@@ -1221,6 +1352,7 @@ function validateLogSheetBreakDurations_(logSheet, editedRange) {
     const titleValues = logSheet.getRange(2, TITLE_COLUMN, rowCount, 1).getValues();
     const cartValues = logSheet.getRange(2, CART_ID_COLUMN, rowCount, 1).getValues();
     const lengthValues = logSheet.getRange(2, LENGTH_COLUMN, rowCount, 1).getValues();
+    const currentLengthFontColors = logSheet.getRange(2, LENGTH_COLUMN, rowCount, 1).getFontColors();
     const groups = {};
     for (let rowOffset = 0; rowOffset < rowCount; rowOffset++) {
         const timeValue = timeValues[rowOffset][0];
@@ -1262,7 +1394,7 @@ function validateLogSheetBreakDurations_(logSheet, editedRange) {
         }
     }
     const timeFontColors = Array.from({ length: rowCount }, () => [VALID_CART_ID_FONT_COLOR]);
-    const lengthFontColors = Array.from({ length: rowCount }, () => [VALID_CART_ID_FONT_COLOR]);
+    const lengthFontColors = currentLengthFontColors.map((row) => [row[0] || VALID_CART_ID_FONT_COLOR]);
     for (const rowNumber of invalidRows) {
         const rowOffset = rowNumber - 2;
         if (rowOffset < 0 || rowOffset >= rowCount)
@@ -1946,4 +2078,19 @@ function escapeHtmlAttr_(value) {
         .replace(/'/g, "&#39;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
+}
+function applyCartDateValidityStyle_(entrySheet, row, validCartIds) {
+    const cartId = normalizeCartId_(entrySheet.getRange(row, CART_ID_COLUMN).getValue());
+    if (!cartId) {
+        setEntryRowFontColor_(entrySheet, row, VALID_CART_ID_FONT_COLOR);
+        return;
+    }
+    if (validCartIds.has(cartId.toLowerCase())) {
+        setEntryRowFontColor_(entrySheet, row, VALID_CART_ID_FONT_COLOR);
+        return;
+    }
+    setEntryRowFontColor_(entrySheet, row, INVALID_CART_ID_FONT_COLOR);
+}
+function setEntryRowFontColor_(entrySheet, row, color) {
+    entrySheet.getRange(row, TITLE_COLUMN, 1, 5).setFontColor(color);
 }
