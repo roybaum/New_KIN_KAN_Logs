@@ -952,7 +952,7 @@ function onEdit(e: GoogleAppsScript.Events.SheetsOnEdit | undefined) {
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
     if (!inventorySheet) return;
 
-    const activeInventory = getActiveInventoryMatches_(inventorySheet);
+    const activeInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, sheet);
     const matches = findMatchesInInventory_(activeInventory, searchValue);
     if (matches.length === 0) return;
 
@@ -1108,12 +1108,32 @@ function findInventoryMatches_(
 }
 
 function getActiveInventoryMatches_(inventorySheet: GoogleAppsScript.Spreadsheet.Sheet): InventoryMatch[] {
+  const today = new Date();
+  return getActiveInventoryMatchesForDate_(inventorySheet, today);
+}
+
+function getInventoryMatchesForLogSheetDate_(
+  inventorySheet: GoogleAppsScript.Spreadsheet.Sheet,
+  logSheet: GoogleAppsScript.Spreadsheet.Sheet
+): InventoryMatch[] {
+  const spreadsheet = logSheet.getParent();
+  const sheetDate = getIndexDateForSheetName_(spreadsheet, logSheet.getName())
+    || getDateForSheetFromMondayCell_(spreadsheet, logSheet.getName())
+    || new Date();
+
+  return getActiveInventoryMatchesForDate_(inventorySheet, sheetDate);
+}
+
+function getActiveInventoryMatchesForDate_(
+  inventorySheet: GoogleAppsScript.Spreadsheet.Sheet,
+  targetDate: Date
+): InventoryMatch[] {
   const lastRow = inventorySheet.getLastRow();
   if (lastRow < 2) return [];
 
   const data = inventorySheet.getRange(2, 1, lastRow - 1, 7).getValues();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const normalizedDate = new Date(targetDate);
+  normalizedDate.setHours(0, 0, 0, 0);
 
   const activeInventory: InventoryMatch[] = [];
 
@@ -1128,7 +1148,7 @@ function getActiveInventoryMatches_(inventorySheet: GoogleAppsScript.Spreadsheet
       endDate: item[6]
     };
 
-    if (!isActiveToday_(today, match.startDate, match.endDate)) continue;
+    if (!isActiveToday_(normalizedDate, match.startDate, match.endDate)) continue;
 
     activeInventory.push(match);
   }
@@ -1422,7 +1442,7 @@ function applyPickerSelection_(
   const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
   if (!inventorySheet) return;
 
-  const activeInventory = getActiveInventoryMatches_(inventorySheet);
+  const activeInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet);
   const selectedMatch = activeInventory.find(
     (match) => match.cartId.trim().toLowerCase() === cartId.toLowerCase()
   );
@@ -1472,7 +1492,9 @@ function processCartIdRangeEdit_(
   const cartIdOffset = CART_ID_COLUMN - editedRange.getColumn();
   const values = editedRange.getValues();
   const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
-  const activeInventory = inventorySheet ? getActiveInventoryMatches_(inventorySheet) : [];
+  const activeInventory = inventorySheet
+    ? getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet)
+    : [];
   const invalidCarts: Array<{ row: number; cartId: string }> = [];
 
   for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {

@@ -728,7 +728,7 @@ function onEdit(e) {
         const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
         if (!inventorySheet)
             return;
-        const activeInventory = getActiveInventoryMatches_(inventorySheet);
+        const activeInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, sheet);
         const matches = findMatchesInInventory_(activeInventory, searchValue);
         if (matches.length === 0)
             return;
@@ -851,12 +851,23 @@ function findInventoryMatches_(inventorySheet, searchValue) {
     return findMatchesInInventory_(activeInventory, searchValue);
 }
 function getActiveInventoryMatches_(inventorySheet) {
+    const today = new Date();
+    return getActiveInventoryMatchesForDate_(inventorySheet, today);
+}
+function getInventoryMatchesForLogSheetDate_(inventorySheet, logSheet) {
+    const spreadsheet = logSheet.getParent();
+    const sheetDate = getIndexDateForSheetName_(spreadsheet, logSheet.getName())
+        || getDateForSheetFromMondayCell_(spreadsheet, logSheet.getName())
+        || new Date();
+    return getActiveInventoryMatchesForDate_(inventorySheet, sheetDate);
+}
+function getActiveInventoryMatchesForDate_(inventorySheet, targetDate) {
     const lastRow = inventorySheet.getLastRow();
     if (lastRow < 2)
         return [];
     const data = inventorySheet.getRange(2, 1, lastRow - 1, 7).getValues();
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const normalizedDate = new Date(targetDate);
+    normalizedDate.setHours(0, 0, 0, 0);
     const activeInventory = [];
     for (const item of data) {
         const match = {
@@ -868,7 +879,7 @@ function getActiveInventoryMatches_(inventorySheet) {
             startDate: item[5],
             endDate: item[6]
         };
-        if (!isActiveToday_(today, match.startDate, match.endDate))
+        if (!isActiveToday_(normalizedDate, match.startDate, match.endDate))
             continue;
         activeInventory.push(match);
     }
@@ -1097,7 +1108,7 @@ function applyPickerSelection_(entrySheet, row, pickerValue) {
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
     if (!inventorySheet)
         return;
-    const activeInventory = getActiveInventoryMatches_(inventorySheet);
+    const activeInventory = getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet);
     const selectedMatch = activeInventory.find((match) => match.cartId.trim().toLowerCase() === cartId.toLowerCase());
     if (!selectedMatch)
         return;
@@ -1136,7 +1147,9 @@ function processCartIdRangeEdit_(entrySheet, editedRange) {
     const cartIdOffset = CART_ID_COLUMN - editedRange.getColumn();
     const values = editedRange.getValues();
     const inventorySheet = SpreadsheetApp.getActive().getSheetByName(INVENTORY_SHEET_NAME);
-    const activeInventory = inventorySheet ? getActiveInventoryMatches_(inventorySheet) : [];
+    const activeInventory = inventorySheet
+        ? getInventoryMatchesForLogSheetDate_(inventorySheet, entrySheet)
+        : [];
     const invalidCarts = [];
     for (let rowOffset = 0; rowOffset < values.length; rowOffset++) {
         const targetRow = editedRange.getRow() + rowOffset;
