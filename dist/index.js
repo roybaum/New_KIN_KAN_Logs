@@ -33,7 +33,7 @@ const INVENTORY_AUTO_SYNC_ON_OPEN_TRIGGER_HANDLER = "syncInventoryFromOnOpenTrig
 const CART_DATE_VALIDITY_TRIGGER_HANDLER = "checkCartDateValidityFromTrigger";
 const INVENTORY_AUTO_SYNC_INTERVAL_MINUTES = 6;
 const INVENTORY_AUTO_SYNC_TRIGGER_POLL_MINUTES = 1;
-const CART_DATE_VALIDITY_CHECK_INTERVAL_MINUTES = 6;
+const CART_DATE_VALIDITY_CHECK_INTERVAL_MINUTES = 5;
 const INVENTORY_AUTO_SYNC_INTERVAL_MILLISECONDS = INVENTORY_AUTO_SYNC_INTERVAL_MINUTES * 60 * 1000;
 const INVENTORY_AUTO_SYNC_LAST_RUN_PROPERTY_KEY = "inventoryAutoSyncLastRunMs";
 const DAY_NUMBER_TO_DAY_TOKEN = {
@@ -79,7 +79,7 @@ function onOpen() {
         .addSubMenu(ui
         .createMenu("Cart Date Validity")
         .addItem("Check Now", "checkCartDateValidityNow")
-        .addItem("Enable Auto Check (Every 6 Min)", "enableCartDateValidityAutoCheck")
+        .addItem("Enable Auto Check (Every 5 Min)", "enableCartDateValidityAutoCheck")
         .addItem("Disable Auto Check", "disableCartDateValidityAutoCheck"))
         .addItem("Fill FL5 Break Gaps", "fillFl5BreakGapsFromInventory")
         .addItem("Remove FL5 Carts From Logs", "removeFl5CartsFromLogs")
